@@ -2,6 +2,6 @@
 # (no cp310+ manylinux wheel; that's why we pin py39 and skip local which is 3.14)
 Pyrogram==2.0.106
 py-tgcalls==2.3.3
-tgcalls==2.0.0
+# tgcalls==2.0.0
 yt-dlp>=2025.1.15
 python-dotenv>=1.0.1
