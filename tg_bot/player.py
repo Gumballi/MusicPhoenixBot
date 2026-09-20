@@ -1,4 +1,8 @@
-"""MusicPlayer: the PyTgCalls sidecar streamer (Poke's architecture).
+"""MusicPlayer: the PyTgCalls sidecar streamer.
+
+The sidecar-architecture lesson (a datacenter-safe player never streams a
+gated YouTube URL): this userbot account does ALL the voice-chat work, and
+the main PTB bot stays free of voice-chat powers.
 
 PyTgCalls runs as a *userbot sidecar* on the spare account -- the PTB main bot
 never gets voice-chat powers; this Pyrogram userbot alone streams into the
@@ -16,15 +20,28 @@ from tg_bot.resolver import resolve_track, ResolveError
 
 try:
     from pytgcalls import PyTgCalls
-    from pytgcalls.types import AudioPiped
-    from pytgcalls.exceptions import NoActiveGroupCall
+    from pytgcalls.types import MediaStream, AudioQuality
+    from pytgcalls.types import MediaStream, AudioQuality
+    if not hasattr(MediaStream, "__name__"):
+        raise RuntimeError("pytgcalls.types.MediaStream missing")
     PYTGCALLS_READY = True
 except ImportError:
     PyTgCalls = None
-    AudioPiped = None
-    NoActiveGroupCall = None
+    MediaStream = None
+    AudioQuality = None
     PYTGCALLS_READY = False
-    LOGGER.warning("pytgcalls not installed; /play will not stream")
+    LOGGER.exception(
+        "pytgcalls import FAILED (not 'not installed') — full traceback above: "
+        "the true error Render hides from you, shown instead of a lie."
+    )
+except Exception:
+    PyTgCalls = None
+    MediaStream = None
+    AudioQuality = None
+    PYTGCALLS_READY = False
+    LOGGER.exception(
+        "pytgcalls raised a runtime error at import (NOT missing) — traceback above."
+    )
 
 
 class QueueItem:

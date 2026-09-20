@@ -1,6 +1,6 @@
 """Tiny resolver: query -> ONE direct audio URL.
 
-Poke's IP lesson stands: Render's datacenter IP gates YouTube, so we refuse to
+Render's datacenter IP gates YouTube, so we refuse to
 hand a gated playable URL to the player.  yt-dlp extract_info(download=False)
 still parses single queries from a datacenter for hosts that don't gate
 (SoundCloud, Bandcamp, direct http).  Nothing here touches Telegram --

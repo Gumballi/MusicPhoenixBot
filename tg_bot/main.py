@@ -1,6 +1,6 @@
 """
 Phoenix Music sidecar - Pyrogram *userbot* that streams audio into a group
-voice chat using PyTgCalls.  Poke's architecture: the spare account does the
+voice chat using PyTgCalls.  the spare-account sidecar architecture: the spare account does the
 VC work, so the main (PTB) bot never needs voice-chat powers.
 
 Boot flow (Render):  python main.py

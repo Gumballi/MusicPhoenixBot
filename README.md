@@ -1,36 +1,78 @@
-# MusicPhoenixBot · Poke's PyTgCalls sidecar
+# TheRealPhoenixBot · Music Sidecar (PyTgCalls)
 
-Userbot that turns a **spare Telegram account** into a group–voice-chat
-streamer.  The main PTB bot never touches a voice chat — the spare account's
-Pyrogram session + PyTgCalls do all the VC work (exactly the architecture "
-Poke" 🌴 described, and the reason Phoenix's main bot needs no voice powers).
+Group voice-chat music streamed by a **spare Telegram account** — the sidecar
+architecture behind TheRealPhoenixBot's VC powers. The main bot never needs
+voice capabilities; this self-contained userbot does all the voice-chat work.
 
-**Why non-YouTube by default:** your Render datacenter IP gets 403'd by
-YouTube's googlevideo CDN.  This sidecar deliberately refuses YouTube/gated
-playable URLs and streams SoundCloud/Bandcamp/SoundCloud-direct-http instead
-— same "IP lesson" that already fixed Phoenix's TikTok/Instagram carousels.
-Nothing here fixes YouTube: it routes *around* it.
+> **Why a sidecar?** Telegram's bot API has no voice-chat surface — a `bot`
+> token cannot join a group call. Only an MTProto userbot (Pyrogram +
+> PyTgCalls) can stream into a voice chat. So this service runs as a *spare
+> account* that joins the group's VC and plays the queue. The main bot just
+> forwards commands; it stays clean of voice-chat powers.
 
-## Boot (Render)
+---
 
-| env                     | meaning                                      |
-|-------------------------|----------------------------------------------|
-| `API_ID` / `API_HASH`   | your Telegram app credentials                |
-| `STRING_SESSION`        | Pyrogram string session of the **spare** acc |
-| `SESSION_TIMEOUT`...    | (optional floor)                             |
-| `ADMIN_IDS`             | comma list allowed to send /play etc.        |
-| `MAX_QUEUE`             | max queued tracks (default 50)               |
+## Features
 
-Run: `python main.py`   (Render: `python main.py`)
+- **Direct-stream playback** — resolves a query to ONE direct audio URL and
+  streams it with FFmpeg/PyTgCalls; no full-file downloads, no disk.
+- **Queue** — `/play`, `/skip`, `/stop`, `/pause`, `/resume`, `/queue`.
+- **Datacenter-safe sources** — this sidecar is *designed around the Render
+  datacenter IP*: YouTube's playable URLs are refused at the resolver, and
+  we target hosts that don't gate datacenter traffic (SoundCloud, Bandcamp,
+  direct HTTP). The architectural lesson that shaped TheRealPhoenixBot:
+  *"render IPs 403 on gated hosts, so never ship a gated url to the player."*
 
-## Commands (in any group the spare account is in)
+---
 
-- `/play <query|url>` — resolve + enqueue
-- `/skip`, `/stop`, `/pause`, `/resume`, `/queue`
-- Only `ADMIN_IDS` may issue the above.
+## Commands
 
-## Layout
-`tg_bot/config.py`   dots-in env → Python objects
-`tg_bot/main.py`     Pyrogram client + boot
-`tg_bot/resolver.py` yt-dlp: query → ONE direct audio URL (non-gated)
-`tg_bot/player.py`   MusicPlayer: PyTgCalls stream + queue loop
+| Command | Action |
+|---|---|
+| `/play <query\|url>` | Resolve & enqueue a track |
+| `/skip` | Skip current |
+| `/stop` | Stop + leave voice chat |
+| `/pause` / `/resume` | Pause/resume |
+| `/queue` | Show queued tracks |
+
+Admin-only (controlled by `ADMIN_IDS`).
+
+---
+
+## Env vars
+
+| Var | Required | Notes |
+|---|---|---|
+| `API_ID` | yes | Your Telegram app id |
+| `API_HASH` | yes | Your Telegram app hash |
+| `STRING_SESSION` | yes | Pyrogram string session of the **spare** account |
+| `ADMIN_IDS` | yes | comma-separated user ids allowed to control |
+| `MAX_QUEUE` | no | default 50 |
+
+---
+
+## Run
+
+```
+pip install -r requirements.txt
+python main.py
+```
+
+## Deploy (Render)
+
+- **Runtime: Python 3.9** (PyTgCalls' `tgcalls` ships prebuilt cp39 wheels;
+  a newer Python would try to compile the native binding from source).
+- Build: `pip install -r requirements.txt`
+- Start: `python main.py`
+- Set the env vars above from the Render dashboard.
+
+---
+
+## Repo layout
+
+```
+tg_bot/config.py     env -> config objects + logger
+tg_bot/resolver.py   query -> ONE direct audio URL (gated-URL refuser)
+tg_bot/player.py     PyTgCalls sidecar: queue loop, stream, pause/resume
+tg_bot/main.py       Pyrogram client boot
+```
