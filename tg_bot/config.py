@@ -53,6 +53,11 @@ API_HASH = _require("API_HASH")
 #   Client("session", api_id=..., api_hash=...).start()  -> session.save()
 STRING_SESSION = _require("STRING_SESSION")
 
+# Pyrogram bot token of the MAIN Phoenix bot -- the /play command listener.
+# The spare account (STRING_SESSION above) stays the VC worker via PyTgCalls;
+# this bot account just turns "/play <query>" into an enqueue+stream call.
+BOT_TOKEN = _require("BOT_TOKEN")
+
 # Optional knobs ------------------------------------------------------------
 ADMIN_IDS = {
     int(part) for part in os.environ.get("ADMIN_IDS", "").split(",") if part.strip().isdigit()

@@ -69,6 +69,17 @@ class MusicPlayer:
         self.player = PyTgCalls(self.app)
         await self.player.start()
 
+    async def play(self, chat_id: int, item: "QueueItem") -> None:
+        if not PYTGCALLS_READY:
+            raise RuntimeError("pytgcalls unavailable")
+        stream = MediaStream(
+            item.url,
+            audio_parameters=AudioQuality.HIGH,
+        )
+        await self.player.play(chat_id, stream)
+        self.current = item
+        self.vc_chat_id = chat_id
+
     async def add(self, query, requester):
         """Resolve + enqueue; returns the QueueItem for the /play reply."""
         info = resolve_track(query)
