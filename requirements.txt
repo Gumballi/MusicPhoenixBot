@@ -1,6 +1,7 @@
 # Python 3.9 target (py39) - tgcalls manylinux wheels exist for cp39 only
 # (no cp310+ manylinux wheel; that's why we pin py39 and skip local which is 3.14)
 pyrofork
+TgCrypto
 py-tgcalls==2.3.3
 # tgcalls==2.0.0
 yt-dlp>=2025.1.15

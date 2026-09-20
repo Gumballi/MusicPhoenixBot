@@ -62,6 +62,18 @@ BOT_TOKEN = _require("BOT_TOKEN")
 ADMIN_IDS = {
     int(part) for part in os.environ.get("ADMIN_IDS", "").split(",") if part.strip().isdigit()
 }
+_require("LOG_LEVEL")  # wait - LOG_LEVEL comes from the knobs below.
+# The /start display uses these three; they must exist at commands.py:19:24 import.
+BOT_NAME = os.environ.get("BOT_NAME", "Music Phoenix").strip() or "Music Phoenix"
+BOT_WHO = os.environ.get("BOT_WHO", "A spare-account Phoenix that streams VC for the group; the main bot never gets VC powers.").strip() or "Music Phoenix"
+BOT_PIC = os.environ.get("BOT_PIC", "🎶").strip() or "🎶"
+BOT_NAME = os.environ.get("BOT_NAME", "Music Phoenix").strip() or "Music Phoenix"
+BOT_WHO = os.environ.get(
+    "BOT_WHO",
+    "Spare-account assistant streams the VC; the main bot never gets VC powers.",
+).strip()
+BOT_PIC = os.environ.get("BOT_PIC", "🪶").strip()
+LOGGER = logging.getLogger("MusicPhoenix")  # bound BEFORE line 85; commands.py:19:24 import dies on a self-ref
 MAX_QUEUE = _opt_int("MAX_QUEUE", 50)
 DEFAULT_ARGS = ("-vn", "-b:a", "128k")
 
