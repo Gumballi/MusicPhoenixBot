@@ -28,4 +28,4 @@ COPY . .
 
 # main.py lives under tg_bot/ -- WORKDIR is /app so `from tg_bot.*` resolve
 # (no pyproject => plain-import surface; repo root is sys.path[0] for the CMD).
-CMD ["python", "tg_bot/main.py"]
+CMD ["python", "-m", "tg_bot.main"]
