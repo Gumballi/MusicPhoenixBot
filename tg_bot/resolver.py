@@ -4,7 +4,7 @@ from difflib import SequenceMatcher
 from typing import Optional
 import yt_dlp
 LOGGER=logging.getLogger(__name__); MIN_DURATION=45
-_YDL_COMMON={"format":"bestaudio/best","noplaylist":True,"quiet":True,"noprogress":True,"no_warnings":True,"nocheckcertificate":True,"socket_timeout":15,"retries":2,"outtmpl":"/tmp/mp_%(id)s.%(ext)s"}
+_YDL_COMMON={"format":"bestaudio/best","noplaylist":True,"quiet":True,"noprogress":True,"no_warnings":True,"nocheckcertificate":True,"socket_timeout":15,"retries":2,"ignoreerrors":True,"outtmpl":"/tmp/mp_%(id)s.%(ext)s"}
 _YOUTUBE_SPOOF={"extractor_args":{"youtube":{"player_client":["android_vr","tv_embedded","android_creator","mweb","android","ios"]}}}
 GATED_HOSTS=("youtube.com","youtu.be","googlevideo.com","ggpht.com","ytimg.com")
 BAD_TERMS=("unreleased","demo","snippet","leak","acapella","instrumental","karaoke","cover","remix","live","tribute","pitch","slowed","sped up","speed up","reverb","8d audio","mashup","bootleg","edit","type beat","prod","prod by","produced by","freestyle","flip","sample")
@@ -13,68 +13,61 @@ class ResolveError(Exception): pass
 def _downloaded_path(info:dict)->Optional[str]:
  for e in info.get("requested_downloads") or []:
   p=e.get("filepath") or e.get("_filename")
-  if p and os.path.exists(p): return p
+  if p and os.path.exists(p):return p
  p=info.get("filepath") or info.get("_filename")
- if p and os.path.exists(p): return p
+ if p and os.path.exists(p):return p
  for p in glob.glob("/tmp/mp_{}.*".format(info.get("id"))):
-  if not p.endswith(".part"): return p
+  if not p.endswith(".part"):return p
  return None
 
 def _is_gated_host(h:str)->bool:
- h=(h or "").lower(); return any(h==x or h.endswith("."+x) for x in GATED_HOSTS)
+ h=(h or "").lower();return any(h==x or h.endswith("."+x) for x in GATED_HOSTS)
 
 def _clean(q:str)->str:
- q=re.sub(r"\[[^]]*\]|\([^)]*\)"," ",q.lower()); return re.sub(r"\s+"," ",re.sub(r"[^\w\s]"," ",q,flags=re.UNICODE)).strip()
+ q=q.replace("–"," ").replace("—"," ").replace("−"," ").lower()
+ q=re.sub(r"\[[^]]*\]|\([^)]*\)"," ",q)
+ return re.sub(r"\s+"," ",re.sub(r"[^\w\s]"," ",q,flags=re.UNICODE)).strip()
 
 def _query_variants(q:str):
- c=_clean(q); w=c.split(); out=[c]
- if len(w)>2: out += [" ".join(w[-3:])," ".join(w[-2:])]
+ c=_clean(q);w=c.split();out=[c]
+ if len(w)>2:out += [" ".join(w[-3:])," ".join(w[-2:])]
  for a,b in (("tlahum","tilahun"),("tlahun","tilahun"),("gesese","gessesse"),("gessese","gessesse")):
-  if a in c: out.insert(1,c.replace(a,b))
+  if a in c:out.insert(1,c.replace(a,b))
  return list(dict.fromkeys(x for x in out if x))
 
-def _artist(info:dict)->str:
- return str(info.get("uploader") or info.get("uploader_id") or info.get("artist") or info.get("creator") or info.get("channel") or "").lower()
-
+def _artist(info:dict)->str:return str(info.get("uploader") or info.get("uploader_id") or info.get("artist") or info.get("creator") or info.get("channel") or "").lower()
 def _requested_artist(q:str)->str:
- w=_clean(q).split(); return " ".join(w[-2:]) if len(w)>=4 else ""
-
+ w=_clean(q).split();return " ".join(w[-2:]) if len(w)>=4 else ""
 def _artist_mismatch(info:dict,q:str)->bool:
  wanted=_requested_artist(q)
  if not wanted:return False
- wa=set(wanted.split()); title=str(info.get("title") or "").lower(); clean_title=_clean(title)
- # A fan/archivist upload commonly begins with "Artist - Song" or "Artist: Song".
- # This is stronger evidence than the uploader account and must be accepted.
+ wa=set(wanted.split());title=str(info.get("title") or "").lower();clean_title=_clean(title)
  prefix=re.match(r"^\s*([^:–—-]+?)\s*(?:[:–—]|\s-\s)",title)
- if prefix and wa.issubset(set(_clean(prefix.group(1)).split())): return False
- # If the requested artist appears as the title's explicit leading artist, accept it
- # even when the uploader is a curator.
- if clean_title.startswith(wanted+" ") or clean_title.startswith(wanted+"-") or clean_title.startswith(wanted+":"): return False
- # A trailing " - Other Artist" is an explicit conflicting artist.
+ if prefix and wa.issubset(set(_clean(prefix.group(1)).split())):return False
+ if clean_title.startswith(wanted+" ") or clean_title.startswith(wanted+"-") or clean_title.startswith(wanted+":"):return False
  tail=re.search(r"\s[-–—]\s*([^|]+)$",title)
- if tail and not wa.issubset(set(_clean(tail.group(1)).split())): return True
+ if tail and not wa.issubset(set(_clean(tail.group(1)).split())):return True
  candidate=_artist(info)
  if candidate and not wa.issubset(set(_clean(candidate).split())):
-  # Direct artist-in-title uploads are valid unless marked as a derivative/beat.
-  if wanted in clean_title and not any(x in title for x in BAD_TERMS): return False
+  if wanted in clean_title and not any(x in title for x in BAD_TERMS):return False
   return True
  return False
 
 def _score(info:dict,q:str)->float:
- title=str(info.get("title") or "").lower(); words=_clean(q).split(); wanted=_requested_artist(q); target=" ".join(words[:-2]) if wanted else " ".join(words)
- main=re.split(r"\s[-–—]\s",title,1)[0]; ratio=SequenceMatcher(None," ".join(sorted(target.split()))," ".join(sorted(re.findall(r"[a-z0-9]+",main)))).ratio() if target and main else 0
+ title=str(info.get("title") or "").lower();words=_clean(q).split();wanted=_requested_artist(q);target=" ".join(words[:-2]) if wanted else " ".join(words)
+ main=re.split(r"\s[-–—]\s",title,1)[0];ratio=SequenceMatcher(None," ".join(sorted(target.split()))," ".join(sorted(re.findall(r"[a-z0-9]+",main)))).ratio() if target and main else 0
  score=ratio*100
- if target and set(target.split()).issubset(set(re.findall(r"[a-z0-9]+",main))): score+=35
- if any(x in title for x in BAD_TERMS): score-=90
- if _artist_mismatch(info,q): score-=1000
- if ratio<0.35: score-=80
+ if target and set(target.split()).issubset(set(re.findall(r"[a-z0-9]+",main))):score+=35
+ if any(x in title for x in BAD_TERMS):score-=90
+ if _artist_mismatch(info,q):score-=1000
+ if ratio<0.35:score-=80
  return score
 
 def _search_jiosaavn(q:str)->Optional[dict]:
- u="https://www.jiosaavn.com/api.php?"+urllib.parse.urlencode({"__call":"search.getResults","_format":"json","_marker":0,"query":q,"n":5})
+ u="https://www.jiosaavn.com/api.php?"+urllib.parse.urlencode({"__call":"search.getResults","_format":"json","_marker":0,"query":_clean(q),"n":5})
  try:
   with urllib.request.urlopen(urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0"}),timeout=12) as r:p=json.loads(r.read().decode("utf-8","replace"))
- except Exception as e: LOGGER.warning("JioSaavn search failed: %s",e); return None
+ except Exception as e:LOGGER.warning("JioSaavn search failed: %s",e);return None
  es=p if isinstance(p,list) else (p.get("results") or []) if isinstance(p,dict) else []
  for x in es:
   if not isinstance(x,dict):continue
@@ -94,9 +87,9 @@ def _search_ytdlp(extractor:str,q:str,count:int=5)->dict:
   except Exception as e:raise ResolveError("yt-dlp %s search failed for %r: %s"%(extractor,q,e)) from e
   es=[x for x in (listing.get("entries") or []) if x][:count] if listing else []
   if not es and listing:es=[listing]
-  scored=sorted(((_score(x,q),i,x) for i,x in enumerate(es)),key=lambda z:z[0],reverse=True); errors=[]
+  scored=sorted(((_score(x,q),i,x) for i,x in enumerate(es)),key=lambda z:z[0],reverse=True);errors=[]
   for rank,(score,_,x) in enumerate(scored,1):
-   title=x.get("title") or q; artist=x.get("uploader") or x.get("channel") or ""; dur=x.get("duration") or 0
+   title=x.get("title") or q;artist=x.get("uploader") or x.get("channel") or "";dur=x.get("duration") or 0
    LOGGER.info("%s candidate=%d title=%s artist=%s duration=%s score=%.2f artist_mismatch=%s",extractor,rank,title,artist,dur,score,_artist_mismatch(x,q))
    if score<=-500:errors.append("%s artist mismatch"%title);continue
    if dur and dur<MIN_DURATION:errors.append("%s is only %ss"%(title,dur));continue
