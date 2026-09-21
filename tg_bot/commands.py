@@ -50,7 +50,7 @@ def register(bot: Client, player: "MusicPlayer") -> None:
 
     @bot.on_message(filters.command(["help"], prefixes=["/", "!"]))
     async def help_handler(_: Client, message: Message) -> None:
-        await message.reply_text("/play <song or link> · /queue · /pause · /resume · /skip · /stop")
+        await message.reply_text("/play <song or link> · /queue · /pause · /resume · /skip or /next · /stop")
 
     @bot.on_message(filters.command(["queue"], prefixes=["/", "!"]))
     async def queue_handler(_: Client, message: Message) -> None:
@@ -79,7 +79,7 @@ def register(bot: Client, player: "MusicPlayer") -> None:
             return
         await message.reply_text("Resumed the stream." if await player.resume(message.chat.id) else "Nothing is paused to resume.")
 
-    @bot.on_message(filters.command(["skip"], prefixes=["/", "!"]))
+    @bot.on_message(filters.command(["skip", "next"], prefixes=["/", "!"]))
     async def skip_handler(_: Client, message: Message) -> None:
         if not await _is_admin(message):
             await message.reply_text("Only group admins can skip tracks.")
