@@ -12,7 +12,6 @@ import yt_dlp
 
 LOGGER = logging.getLogger(__name__)
 MIN_DURATION = 45
-SAAVN_ENDPOINT = "https://www.jiosaavn.com/api.php"
 
 YDL_OPTS = {
     "format": "bestaudio/best",
@@ -57,47 +56,62 @@ def _value(song: dict, *keys: str):
     return None
 
 
-def _jiosaavn_search(query: str) -> Optional[dict]:
-    """Use the synchronous public endpoint because resolve_track runs in to_thread."""
-    params = {
-        "__call": "search.getResults",
-        "_format": "json",
-        "n": 5,
-        "p": 1,
-        "q": query,
-        "_marker": 0,
-        "api_version": 4,
-        "ctx": "web6dot0",
-    }
-    url = SAAVN_ENDPOINT + "?" + urlencode(params)
-    try:
-        request = Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urlopen(request, timeout=12) as response:
-            payload = json.loads(response.read().decode("utf-8", "replace"))
-    except Exception as exc:
-        LOGGER.info("JioSaavn lookup failed: %s", exc)
-        return None
-
-    songs = payload.get("results") or payload.get("data") or []
-    if isinstance(songs, dict):
-        songs = songs.get("results") or songs.get("songs") or []
-    if not songs:
-        return None
-    song = songs[0]
+def _direct_url(song: dict) -> Optional[str]:
+    more = song.get("more_info") or {}
     stream = _value(song, "download_url", "downloadUrl", "media_url", "mediaUrl")
+    stream = stream or _value(more, "download_url", "downloadUrl", "media_url", "mediaUrl")
     if isinstance(stream, list):
         stream = (stream[-1] or {}).get("url") if stream else None
     if isinstance(stream, dict):
         stream = stream.get("url")
-    if not stream:
-        # JioSaavn sometimes exposes only the encrypted field; never return it
-        # as a playable URL, and let the next provider handle the query.
-        return None
-    return {
-        "title": _value(song, "song", "title", "name") or query,
-        "url": stream,
-        "webpage": _value(song, "url", "perma_url", "permaUrl"),
+    return stream if isinstance(stream, str) and stream.startswith(("http://", "https://")) else None
+
+
+def _jiosaavn_search(query: str) -> Optional[dict]:
+    """Synchronous lookup: player.add runs resolve_track in asyncio.to_thread."""
+    requests = [
+        ("jiosaavn", "https://www.jiosaavn.com/api.php", {
+            "__call": "search.getResults", "_format": "json", "n": 5, "p": 1,
+            "q": query, "_marker": 0, "api_version": 4, "ctx": "web6dot0",
+        }),
+        ("saavn.dev", "https://saavn.dev/api/search/songs", {"query": query}),
+        ("saavn.me", "https://saavn.me/api/search/songs", {"query": query}),
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://www.jiosaavn.com/",
     }
+    for name, endpoint, params in requests:
+        url = endpoint + "?" + urlencode(params)
+        try:
+            LOGGER.info("JioSaavn request provider=%s url=%s", name, url)
+            request = Request(url, headers=headers)
+            with urlopen(request, timeout=12) as response:
+                status = getattr(response, "status", response.getcode())
+                body = response.read().decode("utf-8", "replace")
+            LOGGER.info("JioSaavn response provider=%s status=%s bytes=%s", name, status, len(body))
+            if status != 200:
+                continue
+            payload = json.loads(body)
+        except Exception as exc:
+            LOGGER.warning("JioSaavn request failed provider=%s url=%s error=%r", name, url, exc)
+            continue
+
+        songs = payload.get("results") or payload.get("data") or []
+        if isinstance(songs, dict):
+            songs = songs.get("results") or songs.get("songs") or []
+        LOGGER.info("JioSaavn parsed provider=%s result_count=%s payload_keys=%s", name, len(songs), list(payload)[:12])
+        for song in songs:
+            stream = _direct_url(song)
+            if stream:
+                return {
+                    "title": _value(song, "song", "title", "name") or query,
+                    "url": stream,
+                    "webpage": _value(song, "url", "perma_url", "permaUrl"),
+                }
+        LOGGER.warning("JioSaavn provider=%s returned no direct playable URL", name)
+    return None
 
 
 def _extract(source: str, label: str, reject_short: bool = False) -> Optional[dict]:
@@ -132,18 +146,15 @@ def resolve_track(query: str) -> dict:
     query = (query or "").strip()
     if not query:
         raise ResolveError("Empty music query")
-
     if query.startswith(("http://", "https://")):
         result = _extract(query, "direct URL")
     else:
         result = _jiosaavn_search(query)
         if result:
             return result
-        # A short SoundCloud preview is a failed provider, not a terminal error.
         result = _extract("scsearch1:" + query, "SoundCloud", reject_short=True)
         if result is None:
             result = _extract("ytsearch1:" + query, "YouTube", reject_short=True)
-
     if result is None:
         raise ResolveError("No full-length playable result found for {!r}".format(query))
     return result
