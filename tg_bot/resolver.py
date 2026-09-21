@@ -56,7 +56,7 @@ def _artist_text(song:dict)->str:
     m=song.get("more_info") or {}; a=_value(song,"primary_artists","singers","artist","artists") or _value(m,"music","primary_artists","singers","artist") or ""
     if isinstance(a,list): a=" ".join(str(x.get("name",x)) if isinstance(x,dict) else str(x) for x in a)
     mapped=(m.get("artistMap") or {}).get("primary_artists") or []
-    return (str(a)+" "+" " ".join(str(x.get("name","")) for x in mapped if isinstance(x,dict))).lower()
+    return (str(a) + " " + " ".join(str(x.get("name", "")) for x in mapped if isinstance(x, dict))).lower()
 
 def _is_junk(song:dict,query:str)->bool:
     terms=("karaoke","instrumental","tribute","cover","in the style of","originally performed","recreated version","re-recorded")
@@ -73,17 +73,11 @@ def _score(song:dict,query:str)->float:
     return score
 
 def _jiosaavn_search(query:str)->Optional[dict]:
-    # Song-specific search is attempted first; the public endpoint currently
-    # returns an empty result for some catalog queries, so retain getResults.
-    variants=[query]
-    words=query.split()
-    if len(words)>1:
-        variants.append(" ".join(words[:-2]) if len(words)>2 else words[0])
+    variants=[query]; words=query.split()
+    if len(words)>1: variants.append(" ".join(words[:-2]) if len(words)>2 else words[0])
     endpoints=[]
-    for q in variants:
-        endpoints += [("song-results","search.getSongResults",q),("results","search.getResults",q)]
-    headers={"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36","Accept":"application/json,text/plain,*/*","Referer":"https://www.jiosaavn.com/"}
-    best=None
+    for q in variants: endpoints += [("song-results","search.getSongResults",q),("results","search.getResults",q)]
+    headers={"User-Agent":"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/124 Safari/537.36","Accept":"application/json,text/plain,*/*","Referer":"https://www.jiosaavn.com/"}; best=None
     for name,call,q in endpoints:
         params={"__call":call,"_format":"json","n":20,"p":1,"q":q,"_marker":0,"api_version":4,"ctx":"web6dot0"}; url="https://www.jiosaavn.com/api.php?"+urlencode(params)
         try:
@@ -91,18 +85,14 @@ def _jiosaavn_search(query:str)->Optional[dict]:
             with urlopen(Request(url,headers=headers),timeout=12) as r: status=getattr(r,"status",r.getcode()); payload=json.loads(r.read().decode("utf-8","replace"))
             songs=payload.get("results") or payload.get("data") or []
             if isinstance(songs,dict): songs=songs.get("results") or songs.get("songs") or []
-            playable=[s for s in songs if _direct_url(s)]
-            LOGGER.info("JioSaavn parsed provider=%s query=%s status=%s results=%s playable=%s",name,q,status,len(songs),len(playable))
+            playable=[s for s in songs if _direct_url(s)]; LOGGER.info("JioSaavn parsed provider=%s query=%s status=%s results=%s playable=%s",name,q,status,len(songs),len(playable))
             if playable:
-                ranked=sorted(playable,key=lambda s:_score(s,q),reverse=True); candidate=ranked[0]
-                LOGGER.info("JioSaavn candidate query=%s title=%s score=%.2f",q,_value(candidate,"title","song","name"),_score(candidate,q))
-                # A title-only retry is allowed to beat a multi-word query that only found junk.
+                ranked=sorted(playable,key=lambda s:_score(s,q),reverse=True); candidate=ranked[0]; LOGGER.info("JioSaavn candidate query=%s title=%s score=%.2f",q,_value(candidate,"title","song","name"),_score(candidate,q))
                 if best is None or _score(candidate,q)>_score(best[1],best[0]): best=(q,candidate)
                 if _score(candidate,q)>=0 and not _is_junk(candidate,q): break
         except Exception as exc: LOGGER.warning("JioSaavn request failed provider=%s query=%s error=%r",name,q,exc)
     if best:
-        q,s=best; LOGGER.info("JioSaavn selected title=%s query=%s score=%.2f",_value(s,"title","song","name"),q,_score(s,q))
-        return {"title":_value(s,"song","title","name") or query,"url":_direct_url(s),"webpage":_value(s,"url","perma_url","permaUrl")}
+        q,s=best; LOGGER.info("JioSaavn selected title=%s query=%s score=%.2f",_value(s,"title","song","name"),q,_score(s,q)); return {"title":_value(s,"song","title","name") or query,"url":_direct_url(s),"webpage":_value(s,"url","perma_url","permaUrl")}
     return None
 
 def _extract(source:str,label:str,reject_short:bool=False)->Optional[dict]:
