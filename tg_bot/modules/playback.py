@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import html
 
-from pyrogram import Client, filters
+from pyrogram import Client, enums, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
 from tg_bot.config import ADMIN_IDS, BOT_NAME, BOT_PIC, BOT_WHO, LOGGER
@@ -118,14 +118,14 @@ def register(bot: Client, player) -> None:
             return
         await message.reply_text(
             f"{BOT_PIC} I'm {_safe(bot_name)} — use /play &lt;song or link&gt; to start streaming music here.",
-            parse_mode="HTML",
+            parse_mode=enums.ParseMode.HTML,
         )
 
     @bot.on_message(filters.command(["help"], prefixes=["/", "!"]))
     async def help_handler(_, message: Message):
         await message.reply_text(
             HELP_TEXT.format(bot_name=_safe(_bot_display(bot))),
-            parse_mode="HTML",
+            parse_mode=enums.ParseMode.HTML,
         )
 
     @bot.on_message(filters.command(["queue"], prefixes=["/", "!"]))
@@ -135,7 +135,7 @@ def register(bot: Client, player) -> None:
         if not items and current is None:
             return await message.reply_text(
                 "The queue is empty. Use /play &lt;song or link&gt; to add a track.",
-                parse_mode="HTML",
+                parse_mode=enums.ParseMode.HTML,
             )
         lines = (["▶ Now playing: " + _safe(current.title)] if current else []) + [
             f"{i}. {_safe(x.title)}" for i, x in enumerate(items, 1)
