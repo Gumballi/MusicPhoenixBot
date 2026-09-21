@@ -1,11 +1,4 @@
-"""Tiny resolver: query -> ONE direct audio URL.
-
-Render's datacenter IP gates YouTube, so we refuse to
-hand a gated playable URL to the player.  yt-dlp extract_info(download=False)
-still parses single queries from a datacenter for hosts that don't gate
-(SoundCloud, Bandcamp, direct http).  Nothing here touches Telegram --
-"string in, URL out".
-"""
+"""Resolver: query -> one fully-downloaded local audio file."""
 
 import logging
 import os
@@ -16,10 +9,6 @@ import yt_dlp
 
 LOGGER = logging.getLogger(__name__)
 
-# bestaudio/best is enough for every non-YouTube source we target.
-# skip_download must be False for SoundCloud: direct CDN URLs handed to the
-# player over Render's IP are throttled to silence at ~10-20s.  Download into
-# /tmp once, stream the local file, zero remote-socket stalls.
 YDL_OPTS = {
     "format": "bestaudio/best",
     "noplaylist": True,
@@ -33,8 +22,11 @@ YDL_OPTS = {
     "retries": 3,
 }
 
-# Hosts whose direct stream we refuse to hand the player from a datacenter.
 GATED_HOSTS = ("youtube.com", "youtu.be", "googlevideo.com", "ggpht.com")
+
+# Anything shorter than this from a search is almost certainly a gated preview,
+# not the track. Streaming it looks exactly like "the bot cut out after 20s".
+MIN_DURATION = 45
 
 
 class ResolveError(Exception):
@@ -44,29 +36,35 @@ class ResolveError(Exception):
 def _is_gated(url: str) -> bool:
     hostname = (urlparse(url or "").hostname or "").lower()
     return any(
-        hostname == host or hostname.endswith("." + host)
-        for host in GATED_HOSTS
+        hostname == host or hostname.endswith("." + host) for host in GATED_HOSTS
     )
 
 
-def _is_youtube_service(service: str) -> bool:
-    normalized = (service or "").lower().replace(" ", "")
-    return normalized.startswith("youtube")
+def _downloaded_path(info: dict) -> Optional[str]:
+    """FIX: the old code built '/tmp/mp_<id>.<extractor_name>' -- it used the
+    EXTRACTOR as the file extension, so it never matched and always fell
+    through. Ask yt-dlp where it actually put the file."""
+    for entry in info.get("requested_downloads") or []:
+        path = entry.get("filepath") or entry.get("_filename")
+        if path and os.path.exists(path):
+            return path
+    path = info.get("filepath") or info.get("_filename")
+    if path and os.path.exists(path):
+        return path
+    return None
 
 
 def resolve_track(query: str) -> dict:
-    """Return {"title", "url", "webpage"} or raise ResolveError.
-
-    url is ALWAYS a local /tmp filepath now.  Render's datacenter IP gets
-    SoundCloud's CDN socket throttled to roughly nothing ~10-20s in, so
-    handing a remote CDN URL to FFmpeg guarantees the exact EOF-death Poke
-    saw.  yt-dlp downloads into /tmp once; the player streams a file it owns.
-    """
     query = (query or "").strip()
     if not query:
         raise ResolveError("Empty music query")
 
     is_url = query.startswith(("http://", "https://"))
+    if is_url and _is_gated(query):
+        raise ResolveError(
+            "YouTube links are blocked from this host. Try a SoundCloud or "
+            "Bandcamp link, or search by name."
+        )
     source_query = query if is_url else "scsearch1:" + query
 
     with yt_dlp.YoutubeDL(YDL_OPTS) as ydl:
@@ -77,21 +75,26 @@ def resolve_track(query: str) -> dict:
 
     if not info:
         raise ResolveError("Nothing resolved for {!r}".format(query))
-
     if "entries" in info and info["entries"]:
         info = info["entries"][0]
 
-    service = (info.get("extractor_key") or "")
-    id_ = info.get("id") or "track"
-    local_path = "/tmp/mp_{}.{}".format(id_, info.get("extractor", "webm"))
+    title = info.get("title") or query
+    duration = info.get("duration") or 0
 
-    if not os.path.exists(local_path):
-        downloads = info.get("requested_downloads") or []
-        if downloads:
-            local_path = (downloads[0].get("filepath") or local_path)
-        if not os.path.exists(local_path):
-            raise ResolveError("Download did not materialize at {!r}".format(local_path))
+    local_path = _downloaded_path(info)
+    if not local_path:
+        raise ResolveError("Download did not materialize for {!r}".format(title))
 
-    webpage = info.get("webpage_url")
+    # FIX: reject previews. ffmpeg plays a 20s preview to EOF and the call goes
+    # silent -- indistinguishable from a crash.
+    if duration and duration < MIN_DURATION:
+        try:
+            os.remove(local_path)
+        except OSError:
+            pass
+        raise ResolveError(
+            "Only a {:.0f}s preview is available for {!r} -- the full track is "
+            "gated from this IP. Try a direct link instead.".format(duration, title)
+        )
 
-    return {"title": info.get("title") or query, "url": local_path, "webpage": webpage}
+    return {"title": title, "url": local_path, "webpage": info.get("webpage_url")}
