@@ -1,140 +1,126 @@
 """Resolve music queries through JioSaavn, SoundCloud, then YouTube."""
-
-import glob
-import json
-import logging
-import os
-import re
-import urllib.parse
-import urllib.request
+import glob,json,logging,os,re,urllib.parse,urllib.request
+from difflib import SequenceMatcher
 from typing import Optional
-
 import yt_dlp
+LOGGER=logging.getLogger(__name__); MIN_DURATION=45
+_YDL_COMMON={"format":"bestaudio/best","noplaylist":True,"quiet":True,"noprogress":True,"no_warnings":True,"nocheckcertificate":True,"socket_timeout":15,"retries":2,"outtmpl":"/tmp/mp_%(id)s.%(ext)s"}
+_YOUTUBE_SPOOF={"extractor_args":{"youtube":{"player_client":["android_creator","mweb","android","ios"]}}}
+GATED_HOSTS=("youtube.com","youtu.be","googlevideo.com","ggpht.com","ytimg.com")
+BAD_TERMS=("unreleased","demo","snippet","leak","acapella","instrumental","karaoke","cover","remix","live","tribute","pitch","slowed","sped up","speed up","reverb","8d audio","mashup","bootleg","edit")
+class ResolveError(Exception): pass
 
-LOGGER = logging.getLogger(__name__)
-MIN_DURATION = 45
+def _downloaded_path(info:dict)->Optional[str]:
+ for e in info.get("requested_downloads") or []:
+  p=e.get("filepath") or e.get("_filename")
+  if p and os.path.exists(p): return p
+ p=info.get("filepath") or info.get("_filename")
+ if p and os.path.exists(p): return p
+ for p in glob.glob("/tmp/mp_{}.*".format(info.get("id"))):
+  if not p.endswith(".part"): return p
+ return None
 
-_YDL_COMMON = {"format": "bestaudio/best", "noplaylist": True, "quiet": True, "noprogress": True, "no_warnings": True, "nocheckcertificate": True, "socket_timeout": 15, "retries": 2, "outtmpl": "/tmp/mp_%(id)s.%(ext)s"}
-_YOUTUBE_SPOOF = {"extractor_args": {"youtube": {"player_client": ["android_creator", "mweb", "android", "ios"]}}}
-GATED_HOSTS = ("youtube.com", "youtu.be", "googlevideo.com", "ggpht.com", "ytimg.com")
+def _is_gated_host(hostname:str)->bool:
+ h=(hostname or "").lower(); return any(h==x or h.endswith("."+x) for x in GATED_HOSTS)
 
-class ResolveError(Exception):
-    pass
+def _clean_query(q:str)->str:
+ q=re.sub(r"\[[^]]*\]|\([^)]*\)"," ",q.lower()); return re.sub(r"\s+"," ",re.sub(r"[^\w\s]"," ",q,flags=re.UNICODE)).strip()
 
-def _downloaded_path(info: dict) -> Optional[str]:
-    for entry in info.get("requested_downloads") or []:
-        path = entry.get("filepath") or entry.get("_filename")
-        if path and os.path.exists(path): return path
-    path = info.get("filepath") or info.get("_filename")
-    if path and os.path.exists(path): return path
-    track_id = info.get("id")
-    if track_id:
-        for path in glob.glob("/tmp/mp_{}.*".format(track_id)):
-            if not path.endswith(".part"): return path
-    return None
+def _query_variants(q:str):
+ c=_clean_query(q); w=c.split(); out=[c]
+ if len(w)>2: out += [" ".join(w[-3:])," ".join(w[-2:])]
+ for a,b in (("tlahum","tilahun"),("tlahun","tilahun"),("gesese","gessesse"),("gessese","gessesse")):
+  if a in c: out.insert(1,c.replace(a,b))
+ return list(dict.fromkeys(x for x in out if x))
 
-def _is_gated_host(hostname: str) -> bool:
-    hostname = (hostname or "").lower()
-    return any(hostname == host or hostname.endswith("." + host) for host in GATED_HOSTS)
+def _artist(info:dict)->str:
+ return str(info.get("uploader") or info.get("uploader_id") or info.get("artist") or info.get("creator") or info.get("channel") or "").lower()
 
-def _clean_query(query: str) -> str:
-    query = re.sub(r"^[\s\-_/|:]+|[\s\-_/|:]+$", "", query.lower())
-    query = re.sub(r"\[[^\]]*\]|\([^)]*\)", " ", query)
-    query = re.sub(r"[^\w\s]", " ", query, flags=re.UNICODE)
-    return re.sub(r"\s+", " ", query).strip()
+def _title(info:dict)->str: return str(info.get("title") or "").lower()
 
-def _query_variants(query: str):
-    clean = _clean_query(query); variants = [clean]; words = clean.split()
-    if len(words) > 2:
-        variants += [" ".join(words[-3:]), " ".join(words[-2:])]
-    for source, target in (("tlahum", "tilahun"), ("tlahun", "tilahun"), ("gesese", "gessesse"), ("gessese", "gessesse")):
-        if source in clean: variants.insert(1, clean.replace(source, target))
-    return list(dict.fromkeys(v for v in variants if v))
+def _target_title(query:str)->str:
+ w=_clean_query(query).split()
+ if len(w)<=2:return " ".join(w)
+ # Artist+title searches generally put the title first; keep the first phrase for comparison.
+ return " ".join(w[:2])
 
-def _value(song: dict, *keys: str):
-    for key in keys:
-        value = song.get(key)
-        if value not in (None, ""): return value
-    return ""
+def _score(info:dict,query:str)->float:
+ title=_title(info); artist=_artist(info); target=_target_title(query); tt=set(re.findall(r"[a-z0-9]+",target)); ct=set(re.findall(r"[a-z0-9]+",title.split(" - ")[0]));
+ ratio=SequenceMatcher(None," ".join(sorted(tt))," ".join(sorted(ct))).ratio() if tt and ct else 0
+ score=ratio*100
+ if tt and tt.issubset(ct): score+=35
+ if any(x in title for x in BAD_TERMS): score-=90
+ if len(tt)>1 and " ".join(sorted(tt)) in " ".join(sorted(re.findall(r"[a-z0-9]+",artist))): score+=25
+ # Artist tokens help, but never compensate for a completely different main title.
+ for token in re.findall(r"[a-z0-9]+",_clean_query(query)):
+  if token in artist: score+=10
+ if ratio<0.35: score-=80
+ return score
 
-def _score(info: dict, query: str) -> float:
-    title = str(info.get("title") or "").lower(); artist = str(_value(info, "uploader", "uploader_id", "artist", "creator", "channel") or "").lower()
-    tokens = re.findall(r"[a-z0-9]+", query.lower()); score = sum(20 for token in tokens if token in title or token in artist)
-    if tokens and all(token in title or token in artist for token in tokens): score += 30
-    if any(term in title for term in ("karaoke", "instrumental", "tribute", "cover", "remix")): score -= 100
-    return score
+def _search_jiosaavn(q:str)->Optional[dict]:
+ u="https://www.jiosaavn.com/api.php?"+urllib.parse.urlencode({"__call":"search.getResults","_format":"json","_marker":0,"query":q,"n":5})
+ try:
+  with urllib.request.urlopen(urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0"}),timeout=12) as r: p=json.loads(r.read().decode("utf-8","replace"))
+ except Exception as e: LOGGER.warning("JioSaavn search failed: %s",e); return None
+ es=p if isinstance(p,list) else (p.get("results") or []) if isinstance(p,dict) else []
+ for x in es:
+  if not isinstance(x,dict): continue
+  m=x.get("media_url") or x.get("download_url") or ""
+  if not isinstance(m,str) or not m.startswith("https://"): continue
+  try: d=int(x.get("duration") or 0)
+  except (TypeError,ValueError): d=0
+  if d and d<MIN_DURATION: continue
+  LOGGER.info("JioSaavn CDN direct title=%s artist=%s",x.get("title") or q,x.get("singers") or x.get("artist") or "")
+  return {"title":x.get("title") or q,"url":m,"webpage":x.get("perma_url")}
+ return None
 
-def _search_jiosaavn(query: str) -> Optional[dict]:
-    url = "https://www.jiosaavn.com/api.php?" + urllib.parse.urlencode({"__call": "search.getResults", "_format": "json", "_marker": 0, "query": query, "n": 5})
-    try:
-        request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(request, timeout=12) as response: payload = json.loads(response.read().decode("utf-8", "replace"))
-    except Exception as exc:
-        LOGGER.warning("JioSaavn search failed: %s", exc); return None
-    entries = payload if isinstance(payload, list) else (payload.get("results") or []) if isinstance(payload, dict) else []
-    for entry in entries:
-        if not isinstance(entry, dict): continue
-        media = entry.get("media_url") or entry.get("download_url") or ""
-        if not isinstance(media, str) or not media.startswith("https://"): continue
-        try: duration = int(entry.get("duration") or 0)
-        except (TypeError, ValueError): duration = 0
-        if duration and duration < MIN_DURATION: continue
-        title = entry.get("title") or query
-        LOGGER.info("JioSaavn CDN direct title=%s artist=%s", title, entry.get("singers") or entry.get("artist") or "")
-        return {"title": title, "url": media, "webpage": entry.get("perma_url")}
-    return None
+def _search_ytdlp(extractor:str,q:str,count:int=5)->dict:
+ opts=dict(_YDL_COMMON)
+ if extractor.startswith("ytsearch"): opts.update(_YOUTUBE_SPOOF)
+ with yt_dlp.YoutubeDL(opts) as y:
+  try: listing=y.extract_info("{}:{}".format(extractor,q),download=False)
+  except Exception as e: raise ResolveError("yt-dlp %s search failed for %r: %s"%(extractor,q,e)) from e
+  es=[x for x in (listing.get("entries") or []) if x][:count] if listing else []
+  if not es and listing: es=[listing]
+  scored=sorted((( _score(x,q),i,x) for i,x in enumerate(es)),key=lambda z:z[0],reverse=True)
+  errors=[]
+  for rank,(score,_,x) in enumerate(scored,1):
+   title=x.get("title") or q; artist=x.get("uploader") or x.get("channel") or ""; dur=x.get("duration") or 0
+   LOGGER.info("%s candidate=%d title=%s artist=%s duration=%s score=%.2f",extractor,rank,title,artist,dur,score)
+   if dur and dur<MIN_DURATION: errors.append("%s is only %ss"%(title,dur)); continue
+   src=x.get("webpage_url") or x.get("original_url") or x.get("url")
+   if not src: continue
+   try:
+    info=y.extract_info(src,download=True)
+    if info and info.get("entries"): info=next((z for z in info["entries"] if z),None)
+    path=_downloaded_path(info or {})
+    if not path: raise ResolveError("download did not materialize")
+    actual=(info.get("duration") or dur) if info else dur
+    if actual and actual<MIN_DURATION: os.remove(path); raise ResolveError("only %ss preview"%actual)
+    return {"title":info.get("title",title) if info else title,"url":path,"webpage":info.get("webpage_url",src) if info else src}
+   except Exception as e: errors.append("%s: %s"%(title,e)); LOGGER.warning("%s candidate=%d failed; trying next: %s",extractor,rank,e)
+  raise ResolveError("no playable %s candidate for %r (%s)"%(extractor,q,"; ".join(errors)))
 
-def _search_ytdlp(extractor: str, query: str, count: int = 5) -> dict:
-    opts = dict(_YDL_COMMON)
-    if extractor.startswith("ytsearch"): opts.update(_YOUTUBE_SPOOF)
-    search_source = "{}:{}".format(extractor, query)
-    LOGGER.info("%s candidate search query=%r count=%d", extractor, query, count)
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        try: listing = ydl.extract_info(search_source, download=False)
-        except Exception as exc: raise ResolveError("yt-dlp %s search failed for %r: %s" % (extractor, query, exc)) from exc
-        entries = [entry for entry in (listing.get("entries") or []) if entry][:count] if listing else []
-        if not entries and listing: entries = [listing]
-        entries.sort(key=lambda entry: _score(entry, query), reverse=True)
-        errors = []
-        for index, candidate in enumerate(entries, 1):
-            title = candidate.get("title") or query; uploader = candidate.get("uploader") or candidate.get("channel") or ""; duration = candidate.get("duration") or 0; score = _score(candidate, query)
-            LOGGER.info("%s candidate=%d title=%s artist=%s duration=%s score=%.2f", extractor, index, title, uploader, duration, score)
-            if duration and duration < MIN_DURATION: errors.append("%s is only %ss" % (title, duration)); continue
-            source = candidate.get("webpage_url") or candidate.get("url") or candidate.get("original_url")
-            if not source: errors.append("%s has no source URL" % title); continue
-            try:
-                info = ydl.extract_info(source, download=True)
-                if info and info.get("entries"): info = next((item for item in info["entries"] if item), None)
-                path = _downloaded_path(info or {})
-                if not path: raise ResolveError("download did not materialize")
-                actual_duration = (info.get("duration") or duration) if info else duration
-                if actual_duration and actual_duration < MIN_DURATION:
-                    os.remove(path); raise ResolveError("only %ss preview" % actual_duration)
-                return {"title": info.get("title", title) if info else title, "url": path, "webpage": info.get("webpage_url", source) if info else source}
-            except Exception as exc:
-                errors.append("%s: %s" % (title, exc)); LOGGER.warning("%s candidate=%d failed; trying next: %s", extractor, index, exc)
-        raise ResolveError("no playable %s candidate for %r (%s)" % (extractor, query, "; ".join(errors)))
+def _search_soundcloud(q:str)->dict:
+ errors=[]
+ for v in _query_variants(q):
+  try:return _search_ytdlp("scsearch5",v,5)
+  except ResolveError as e: errors.append(str(e)); LOGGER.warning("SoundCloud variant failed query=%r: %s",v,e)
+ raise ResolveError("SoundCloud exhausted query variants: %s"%" | ".join(errors))
 
-def _search_soundcloud(query: str) -> dict:
-    errors = []
-    for variant in _query_variants(query):
-        try: return _search_ytdlp("scsearch5", variant, count=5)
-        except ResolveError as exc: errors.append(str(exc)); LOGGER.warning("SoundCloud variant failed query=%r: %s", variant, exc)
-    raise ResolveError("SoundCloud exhausted all query variants: %s" % " | ".join(errors))
-
-def resolve_track(query: str) -> dict:
-    query = (query or "").strip()
-    if not query: raise ResolveError("Empty music query")
-    if query.startswith(("http://", "https://")):
-        if _is_gated_host(urllib.parse.urlparse(query).hostname or ""): raise ResolveError("YouTube links are blocked from this host")
-        return {"title": query, "url": query, "webpage": query}
-    errors = []
-    for variant in _query_variants(query):
-        tier = _search_jiosaavn(variant)
-        if tier: return tier
-    try: return _search_soundcloud(query)
-    except ResolveError as exc: errors.append(str(exc))
-    for variant in _query_variants(query):
-        try: return _search_ytdlp("ytsearch5", variant, count=5)
-        except ResolveError as exc: errors.append(str(exc))
-    raise ResolveError("No free stream resolved for %r -- %s" % (query, " | ".join(errors)))
+def resolve_track(q:str)->dict:
+ q=(q or "").strip()
+ if not q: raise ResolveError("Empty music query")
+ if q.startswith(("http://","https://")):
+  if _is_gated_host(urllib.parse.urlparse(q).hostname or ""): raise ResolveError("YouTube links are blocked from this host")
+  return {"title":q,"url":q,"webpage":q}
+ for v in _query_variants(q):
+  x=_search_jiosaavn(v)
+  if x:return x
+ errors=[]
+ try:return _search_soundcloud(q)
+ except ResolveError as e: errors.append(str(e))
+ for v in _query_variants(q):
+  try:return _search_ytdlp("ytsearch5",v,5)
+  except ResolveError as e: errors.append(str(e))
+ raise ResolveError("No free stream resolved for %r -- %s"%(q," | ".join(errors)))
