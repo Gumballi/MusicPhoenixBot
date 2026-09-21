@@ -37,41 +37,35 @@ def _artist(info:dict)->str:
  return str(info.get("uploader") or info.get("uploader_id") or info.get("artist") or info.get("creator") or info.get("channel") or "").lower()
 
 def _requested_artist(q:str)->str:
- w=_clean(q).split()
- # Search convention is title first, artist last; only gate clearly multi-token artist queries.
- return " ".join(w[-2:]) if len(w)>=4 else ""
-
-def _candidate_artist(info:dict)->str:
- a=_artist(info); title=str(info.get("title") or "").lower()
- tail=re.search(r"\s[-–—]\s*([^|]+)$",title)
- if tail: a=(tail.group(1).strip()+" "+a).strip()
- return a
+ w=_clean(q).split(); return " ".join(w[-2:]) if len(w)>=4 else ""
 
 def _artist_mismatch(info:dict,q:str)->bool:
  wanted=_requested_artist(q)
  if not wanted:return False
- wa=set(wanted.split()); title=str(info.get("title") or "").lower(); ca=_candidate_artist(info)
- # Explicit trailing " - Other Artist" identifies the actual artist and is a hard reject.
+ wa=set(wanted.split()); title=str(info.get("title") or "").lower(); clean_title=_clean(title)
+ # A fan/archivist upload commonly begins with "Artist - Song" or "Artist: Song".
+ # This is stronger evidence than the uploader account and must be accepted.
+ prefix=re.match(r"^\s*([^:–—-]+?)\s*(?:[:–—]|\s-\s)",title)
+ if prefix and wa.issubset(set(_clean(prefix.group(1)).split())): return False
+ # If the requested artist appears as the title's explicit leading artist, accept it
+ # even when the uploader is a curator.
+ if clean_title.startswith(wanted+" ") or clean_title.startswith(wanted+"-") or clean_title.startswith(wanted+":"): return False
+ # A trailing " - Other Artist" is an explicit conflicting artist.
  tail=re.search(r"\s[-–—]\s*([^|]+)$",title)
  if tail and not wa.issubset(set(_clean(tail.group(1)).split())): return True
- # A clear conflicting uploader is rejected unless the title is an explicit curator upload
- # such as "Michael Jackson - Thriller" and has no producer/type-beat indicators.
- known=ca and not any(x in ca for x in ("soundcloud","official","vault","archive","records","music"))
- if known and not wa.issubset(set(_clean(ca).split())):
-  direct=bool(re.search(r"\b"+re.escape(wanted)+r"\b",title)) and not any(x in title for x in BAD_TERMS)
-  return not direct
+ candidate=_artist(info)
+ if candidate and not wa.issubset(set(_clean(candidate).split())):
+  # Direct artist-in-title uploads are valid unless marked as a derivative/beat.
+  if wanted in clean_title and not any(x in title for x in BAD_TERMS): return False
+  return True
  return False
 
 def _score(info:dict,q:str)->float:
- title=str(info.get("title") or "").lower(); target=_clean(q).split(); wanted=_requested_artist(q)
- # Compare title primarily with the leading song-title portion, never with artist tokens.
- target_title=" ".join(target[:-2]) if wanted else " ".join(target)
- main=re.split(r"\s[-–—]\s",title,1)[0]; ratio=SequenceMatcher(None," ".join(sorted(target_title.split()))," ".join(sorted(re.findall(r"[a-z0-9]+",main)))).ratio() if target_title and main else 0
+ title=str(info.get("title") or "").lower(); words=_clean(q).split(); wanted=_requested_artist(q); target=" ".join(words[:-2]) if wanted else " ".join(words)
+ main=re.split(r"\s[-–—]\s",title,1)[0]; ratio=SequenceMatcher(None," ".join(sorted(target.split()))," ".join(sorted(re.findall(r"[a-z0-9]+",main)))).ratio() if target and main else 0
  score=ratio*100
- if target_title and set(target_title.split()).issubset(set(re.findall(r"[a-z0-9]+",main))): score+=35
+ if target and set(target.split()).issubset(set(re.findall(r"[a-z0-9]+",main))): score+=35
  if any(x in title for x in BAD_TERMS): score-=90
- for token in re.findall(r"[a-z0-9]+",_clean(q)):
-  if token in _artist(info): score+=10
  if _artist_mismatch(info,q): score-=1000
  if ratio<0.35: score-=80
  return score
@@ -80,7 +74,7 @@ def _search_jiosaavn(q:str)->Optional[dict]:
  u="https://www.jiosaavn.com/api.php?"+urllib.parse.urlencode({"__call":"search.getResults","_format":"json","_marker":0,"query":q,"n":5})
  try:
   with urllib.request.urlopen(urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0"}),timeout=12) as r:p=json.loads(r.read().decode("utf-8","replace"))
- except Exception as e:LOGGER.warning("JioSaavn search failed: %s",e);return None
+ except Exception as e: LOGGER.warning("JioSaavn search failed: %s",e); return None
  es=p if isinstance(p,list) else (p.get("results") or []) if isinstance(p,dict) else []
  for x in es:
   if not isinstance(x,dict):continue
