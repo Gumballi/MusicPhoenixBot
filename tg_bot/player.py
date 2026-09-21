@@ -40,6 +40,7 @@ class ChatState:
     playing: bool = False
     paused: bool = False
     advance: asyncio.Event = field(default_factory=asyncio.Event)
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
 class VirtualAudioClient:
@@ -49,10 +50,6 @@ class VirtualAudioClient:
         self._call = PyTgCalls(app)
 
     def add_handler(self, func: Any) -> None:
-        # FIX: on_update() is a DECORATOR FACTORY. It must be called with no
-        # args to get the decorator, then applied to the handler. The old
-        # `on_update(self._on_update)` bound the handler to the `filters`
-        # parameter and discarded the decorator -> handler never registered.
         self._call.on_update()(func)
 
     async def start(self) -> None:
@@ -62,7 +59,6 @@ class VirtualAudioClient:
         stream = MediaStream(
             path,
             audio_parameters=AudioQuality.HIGH,
-            # FIX: never let AUTO_DETECT open a video source in a group call.
             video_flags=MediaStream.Flags.IGNORE,
             audio_flags=MediaStream.Flags.REQUIRED,
         )
@@ -75,7 +71,7 @@ class VirtualAudioClient:
         await self._call.resume(chat_id)
 
     async def leave(self, chat_id: int) -> None:
-        await self._call.leave_group_call(chat_id)
+        await self._call.leave_call(chat_id)
 
 
 class MusicPlayer:
@@ -90,8 +86,6 @@ class MusicPlayer:
     def _state(self, chat_id: int) -> ChatState:
         state = self.states.get(chat_id)
         if state is None:
-            # FIX: do NOT pre-set advance here. A set event makes the worker
-            # skip its first wait and tear straight through the queue.
             state = ChatState(chat_id=chat_id)
             self.states[chat_id] = state
         return state
@@ -104,7 +98,6 @@ class MusicPlayer:
         await self.vc.start()
 
     async def _on_update(self, _client, update) -> None:
-        """Handlers are propagated as func(client, update)."""
         if isinstance(update, StreamEnded):
             if not (update.stream_type & StreamEnded.Type.AUDIO):
                 return
@@ -134,11 +127,10 @@ class MusicPlayer:
         if self.vc is None:
             raise RuntimeError("Voice-chat worker (PyTgCalls) is offline")
         state = self._state(chat_id)
-        state.queue.append(item)
-        # FIX: no advance.set() here. The old code woke the worker mid-track,
-        # so a second /play cut the first song off instead of queueing it.
-        if state.task is None or state.task.done():
-            state.task = asyncio.create_task(self._worker(chat_id))
+        async with state.lock:
+            state.queue.append(item)
+            if state.task is None or state.task.done():
+                state.task = asyncio.create_task(self._worker(chat_id))
 
     async def _worker(self, chat_id: int) -> None:
         state = self._state(chat_id)
@@ -152,16 +144,20 @@ class MusicPlayer:
                 try:
                     await self.vc.play(chat_id, item.url)
                     LOGGER.info("chat %s now streaming %r", chat_id, item.title)
-                except Exception as exc:
-                    # One bad track must not kill the whole queue.
+                except Exception:
                     LOGGER.exception("chat %s: play failed for %r", chat_id, item.title)
                     self._discard(item)
+                    state.current = None
+                    state.playing = False
                     continue
                 await state.advance.wait()
                 self._discard(item)
+                state.current = None
         except asyncio.CancelledError:
             raise
         finally:
+            if state.current is not None:
+                self._discard(state.current)
             state.current = None
             state.playing = False
             if not state.queue:
@@ -169,25 +165,19 @@ class MusicPlayer:
 
     @staticmethod
     def _discard(item: QueueItem) -> None:
-        """Delete the /tmp download so Render's disk doesn't fill up."""
+        """Delete a downloaded temporary file, if present."""
         try:
-            if item.url.startswith("/tmp/") and os.path.exists(item.url):
+            if item.url.startswith("/tmp/") and os.path.isfile(item.url):
                 os.remove(item.url)
         except OSError:
             LOGGER.debug("could not remove %s", item.url)
 
     async def _stop_current(self, chat_id: int) -> None:
-        """Sever the call in a context that py-tgcalls 2.3.3 accepts (chat_id
-        positional); the old v0 path took no arg. Never hard-fail: `/stop` must
-        answer even when the call was already severed datacenter-side."""
         try:
             await self.vc.leave(chat_id)
             LOGGER.info("chat %s: left voice call", chat_id)
         except Exception as exc:
-            LOGGER.warning(
-                "chat %s: leave_group_call failed (was already severed?): %s",
-                chat_id, exc,
-            )
+            LOGGER.warning("chat %s: leave_call failed: %s", chat_id, exc)
 
     async def pause(self, chat_id: int) -> bool:
         state = self._state(chat_id)
@@ -214,9 +204,6 @@ class MusicPlayer:
             return False
 
     async def skip(self, chat_id: int) -> Optional[QueueItem]:
-        # FIX: don't cancel the worker and don't call end_stream. PyTgCalls.play
-        # on an already-active call swaps the source in place, so just release
-        # the worker and let it advance.
         state = self._state(chat_id)
         if not state.playing:
             return None
@@ -226,25 +213,38 @@ class MusicPlayer:
 
     async def stop(self, chat_id: int) -> bool:
         state = self._state(chat_id)
-        was = state.playing or bool(state.queue) or (
-            state.task is not None and not state.task.done()
-        )
-        for item in list(state.queue):
+        async with state.lock:
+            task = state.task
+            was_active = (
+                state.playing
+                or bool(state.queue)
+                or (task is not None and not task.done())
+            )
+            queued = list(state.queue)
+            state.queue.clear()
+            current = state.current
+            state.current = None
+            state.playing = False
+            state.paused = False
+            state.advance.set()
+            state.task = None
+
+        for item in queued:
             self._discard(item)
-        state.queue.clear()
-        if state.current is not None:
-            self._discard(state.current)
-        state.current = None
-        state.playing = False
-        state.advance.set()
-        task, state.task = state.task, None
-        if task is not None and not task.done():
+        if current is not None:
+            self._discard(current)
+        if task is not None and not task.done() and task is not asyncio.current_task():
             task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
         try:
             await self.vc.leave(chat_id)
         except Exception:
             LOGGER.debug("leave failed chat %s (probably not in call)", chat_id)
-        return was
+        return was_active
 
     def now_playing(self, chat_id: int) -> Optional[QueueItem]:
         state = self.states.get(chat_id)
