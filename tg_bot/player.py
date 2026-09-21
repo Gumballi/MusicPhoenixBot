@@ -69,10 +69,10 @@ class VirtualAudioClient:
         await self._call.play(chat_id, stream)
 
     async def pause(self, chat_id: int) -> None:
-        await self._call.pause_stream(chat_id)
+        await self._call.pause(chat_id)
 
     async def resume(self, chat_id: int) -> None:
-        await self._call.resume_stream(chat_id)
+        await self._call.resume(chat_id)
 
     async def leave(self, chat_id: int) -> None:
         await self._call.leave_group_call(chat_id)
@@ -152,7 +152,7 @@ class MusicPlayer:
                 try:
                     await self.vc.play(chat_id, item.url)
                     LOGGER.info("chat %s now streaming %r", chat_id, item.title)
-                except Exception:
+                except Exception as exc:
                     # One bad track must not kill the whole queue.
                     LOGGER.exception("chat %s: play failed for %r", chat_id, item.title)
                     self._discard(item)
@@ -177,10 +177,17 @@ class MusicPlayer:
             LOGGER.debug("could not remove %s", item.url)
 
     async def _stop_current(self, chat_id: int) -> None:
+        """Sever the call in a context that py-tgcalls 2.3.3 accepts (chat_id
+        positional); the old v0 path took no arg. Never hard-fail: `/stop` must
+        answer even when the call was already severed datacenter-side."""
         try:
             await self.vc.leave(chat_id)
-        except Exception:
-            pass
+            LOGGER.info("chat %s: left voice call", chat_id)
+        except Exception as exc:
+            LOGGER.warning(
+                "chat %s: leave_group_call failed (was already severed?): %s",
+                chat_id, exc,
+            )
 
     async def pause(self, chat_id: int) -> bool:
         state = self._state(chat_id)
@@ -219,7 +226,9 @@ class MusicPlayer:
 
     async def stop(self, chat_id: int) -> bool:
         state = self._state(chat_id)
-        was = state.playing or bool(state.queue)
+        was = state.playing or bool(state.queue) or (
+            state.task is not None and not state.task.done()
+        )
         for item in list(state.queue):
             self._discard(item)
         state.queue.clear()

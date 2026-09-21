@@ -1,5 +1,6 @@
 """Resolver: query -> one fully-downloaded local audio file."""
 
+import glob
 import logging
 import os
 from typing import Optional
@@ -51,6 +52,14 @@ def _downloaded_path(info: dict) -> Optional[str]:
     path = info.get("filepath") or info.get("_filename")
     if path and os.path.exists(path):
         return path
+    # FIX: on datacenter IPs (Render), yt-dlp materializes the file straight
+    # into the outtmpl and the info dict never carries filepath/_filename.
+    # The track id is the one byte we always hold -- glob the output template.
+    track_id = info.get("id")
+    if track_id:
+        for matched in glob.glob("/tmp/mp_{}.*".format(track_id)):
+            if not matched.endswith(".part"):
+                return matched
     return None
 
 

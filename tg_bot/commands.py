@@ -41,11 +41,17 @@ def _translate(exc: Exception) -> str:
     return text or "Something went wrong on the server side."
 
 
-def _is_admin(message: Message) -> bool:
+async def _is_admin(message: Message) -> bool:
     user = message.from_user
     if user is None:
         return True  # anonymous admins still get the control surface
-    return user.id in ADMIN_IDS
+    if user.id in ADMIN_IDS:
+        return True  # configured owners always keep the control surface
+    try:
+        member = await message.chat.get_member(user.id)
+    except Exception:
+        return False
+    return member.status.value in ("administrator", "creator")
 
 
 def register(bot: Client, player: "MusicPlayer") -> None:
@@ -92,7 +98,7 @@ def register(bot: Client, player: "MusicPlayer") -> None:
 
     @bot.on_message(filters.command(["pause"], prefixes=["/", "!"]))
     async def pause_handler(_: Client, message: Message) -> None:
-        if not _is_admin(message):
+        if not await _is_admin(message):
             await message.reply_text("Only group admins can pause playback.")
             return
         ok = await player.pause(message.chat.id)
@@ -100,7 +106,7 @@ def register(bot: Client, player: "MusicPlayer") -> None:
 
     @bot.on_message(filters.command(["resume"], prefixes=["/", "!"]))
     async def resume_handler(_: Client, message: Message) -> None:
-        if not _is_admin(message):
+        if not await _is_admin(message):
             await message.reply_text("Only group admins can resume playback.")
             return
         ok = await player.resume(message.chat.id)
@@ -108,7 +114,7 @@ def register(bot: Client, player: "MusicPlayer") -> None:
 
     @bot.on_message(filters.command(["skip"], prefixes=["/", "!"]))
     async def skip_handler(_: Client, message: Message) -> None:
-        if not _is_admin(message):
+        if not await _is_admin(message):
             await message.reply_text("Only group admins can skip tracks.")
             return
         bumped = await player.skip(message.chat.id)
@@ -119,7 +125,7 @@ def register(bot: Client, player: "MusicPlayer") -> None:
 
     @bot.on_message(filters.command(["stop"], prefixes=["/", "!"]))
     async def stop_handler(_: Client, message: Message) -> None:
-        if not _is_admin(message):
+        if not await _is_admin(message):
             await message.reply_text("Only group admins can stop playback.")
             return
         was = await player.stop(message.chat.id)
