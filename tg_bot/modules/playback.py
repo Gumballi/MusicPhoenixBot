@@ -1,54 +1,221 @@
 """Playback commands, kept separate from the audio worker."""
+
 from __future__ import annotations
+
 import html
+
 from pyrogram import Client, filters
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
-from tg_bot.config import ADMIN_IDS, LOGGER
+
+from tg_bot.config import ADMIN_IDS, BOT_NAME, BOT_PIC, BOT_WHO, LOGGER
+
 
 def _safe(value: object) -> str:
     return html.escape(str(value or ""), quote=False)
+
+
 async def _is_admin(message: Message) -> bool:
-    user=message.from_user
-    if user is None or user.id in ADMIN_IDS:return True
-    try:member=await message.chat.get_member(user.id)
-    except Exception:return False
-    return member.status.value in ("administrator","creator")
-def controls(chat_id:int,paused:bool=False)->InlineKeyboardMarkup:
-    p="resume" if paused else "pause"
-    return InlineKeyboardMarkup([[InlineKeyboardButton("▶️" if paused else "⏸️",callback_data=f"music:{chat_id}:{p}"),InlineKeyboardButton("⏭️",callback_data=f"music:{chat_id}:skip"),InlineKeyboardButton("⏹️",callback_data=f"music:{chat_id}:stop")]])
-def register(bot:Client,player)->None:
-    @bot.on_message(filters.command(["start"],prefixes=["/","!"]))
-    async def start_handler(_,message):await message.reply_text("Hello! Use /play <song or link> to stream music.")
-    @bot.on_message(filters.command(["help"],prefixes=["/","!"]))
-    async def help_handler(_,message):await message.reply_text("/play <song or link> · /queue · /pause · /resume · /skip or /next · /stop")
-    @bot.on_message(filters.command(["queue"],prefixes=["/","!"]))
-    async def queue_handler(_,message):
-        items=player.queue_list(message.chat.id);current=player.now_playing(message.chat.id)
-        if not items and current is None:return await message.reply_text("The queue is empty. Use /play to add a track.")
-        lines=(["▶ Now playing: "+_safe(current.title)] if current else []);lines.extend(f"{i}. {_safe(x.title)}" for i,x in enumerate(items,1));await message.reply_text("Queue:\n"+"\n".join(lines),parse_mode=None)
-    @bot.on_message(filters.command(["pause"],prefixes=["/","!"]))
-    async def pause_handler(_,message):
-        if not await _is_admin(message):return await message.reply_text("Only group admins can pause playback.")
-        await message.reply_text("Paused the stream." if await player.pause(message.chat.id) else "Nothing is playing to pause.")
-    @bot.on_message(filters.command(["resume"],prefixes=["/","!"]))
-    async def resume_handler(_,message):
-        if not await _is_admin(message):return await message.reply_text("Only group admins can resume playback.")
-        await message.reply_text("Resumed the stream." if await player.resume(message.chat.id) else "Nothing is paused to resume.")
-    @bot.on_message(filters.command(["skip","next"],prefixes=["/","!"]))
-    async def skip_handler(_,message):
-        if not await _is_admin(message):return await message.reply_text("Only group admins can skip tracks.")
-        await message.reply_text("Skipped the current track." if await player.skip(message.chat.id) else "Nothing to skip -- the queue is empty.")
-    @bot.on_message(filters.command(["stop"],prefixes=["/","!"]))
-    async def stop_handler(_,message):
-        if not await _is_admin(message):return await message.reply_text("Only group admins can stop playback.")
-        await player.stop(message.chat.id);await message.reply_text("Left the voice chat and cleared the queue.")
-    @bot.on_message(filters.command(["play"],prefixes=["/","!"]))
-    async def play_handler(_,message):
-        query=" ".join(message.command[1:])
-        if not query:return await message.reply_text("Give me a song name or link, e.g. /play thriller")
-        status=await message.reply_text("Searching for "+_safe(query),parse_mode=None)
+    user = message.from_user
+    if user is None or user.id in ADMIN_IDS:
+        return True
+    try:
+        member = await message.chat.get_member(user.id)
+    except Exception:
+        return False
+    return member.status.value in ("administrator", "creator")
+
+
+def controls(chat_id: int, paused: bool = False) -> InlineKeyboardMarkup:
+    p = "resume" if paused else "pause"
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "▶️" if paused else "⏸️",
+                    callback_data=f"music:{chat_id}:{p}",
+                ),
+                InlineKeyboardButton(
+                    "⏭️", callback_data=f"music:{chat_id}:skip"
+                ),
+                InlineKeyboardButton(
+                    "⏹️", callback_data=f"music:{chat_id}:stop"
+                ),
+            ]
+        ]
+    )
+
+
+def _bot_display(bot: Client) -> str:
+    try:
+        return bot.me.first_name or BOT_NAME
+    except Exception:
+        return BOT_NAME
+
+
+def _bot_username(bot: Client) -> str:
+    try:
+        return bot.me.username or ""
+    except Exception:
+        return ""
+
+
+HELP_TEXT = """
+{PIC} <b>{bot_name}</b> — I stream music straight into any group's voice chat. No downloads, no waiting: you
+give me a song or a link, and the sidecar account joins the call and plays it.
+
+<b>Commands</b> (all also work with ! instead of /)
+ └ /play &lt;song name or link&gt; — resolve &amp; stream now. I look up JioSaavn first, then SoundCloud, then YouTube, and
+   pick the first playable result over {min_duration}s long.
+ └ /queue — show what's next in line.
+ └ /pause — pause the current track.
+ └ /resume — resume the current track.
+ └ /skip or /next — jump to the next track (they are the same command).
+ └ /stop — leave the voice chat and clear the whole queue.
+
+<b>Who can control playback?</b>
+ • Group admins and the person who requested the current track can pause, resume, skip or stop.
+ • Anyone can /play and /queue.
+ • The <b>▶ Now playing</b> banner carries inline ⏸️ ⏭️ ⏹️ buttons, so admins don't even need to type a command.
+
+{BOT_WHO}
+""".format(
+    PIC=BOT_PIC,
+    bot_name=BOT_NAME,
+    min_duration=45,
+    BOT_WHO=BOT_WHO,
+)
+
+
+def register(bot: Client, player) -> None:
+    @bot.on_message(filters.command(["start"], prefixes=["/", "!"]))
+    async def start_handler(_, message: Message):
+        name = (
+            message.from_user.first_name
+            if message.from_user and message.from_user.first_name
+            else "friend"
+        )
+        bot_name = _bot_display(bot)
+        username = _bot_username(bot)
+        if message.chat.type == "private":
+            text = (
+                f"{BOT_PIC} Hi {_safe(name)}, my name is {_safe(bot_name)}!\n\n"
+                "I stream music straight into any group's voice chat — add me to a group and type /play, "
+                "then sit back. You can find the full list of what I can do with /help."
+            )
+            markup = None
+            if username:
+                markup = InlineKeyboardMarkup(
+                    [
+                        [
+                            InlineKeyboardButton(
+                                f"Add {_safe(bot_name)} to your group",
+                                url=f"http://t.me/{username}?startgroup=botstart",
+                            )
+                        ]
+                    ]
+                )
+            await message.reply_text(text, reply_markup=markup, parse_mode=None)
+            return
+        await message.reply_text(
+            f"{BOT_PIC} I'm {_safe(bot_name)} — use /play &lt;song or link&gt; to start streaming music here.",
+            parse_mode="html",
+        )
+
+    @bot.on_message(filters.command(["help"], prefixes=["/", "!"]))
+    async def help_handler(_, message: Message):
+        await message.reply_text(
+            HELP_TEXT.format(bot_name=_safe(_bot_display(bot))),
+            parse_mode="html",
+        )
+
+    @bot.on_message(filters.command(["queue"], prefixes=["/", "!"]))
+    async def queue_handler(_, message: Message):
+        items = player.queue_list(message.chat.id)
+        current = player.now_playing(message.chat.id)
+        if not items and current is None:
+            return await message.reply_text(
+                "The queue is empty. Use /play &lt;song or link&gt; to add a track.",
+                parse_mode="html",
+            )
+        lines = (["▶ Now playing: " + _safe(current.title)] if current else []) + [
+            f"{i}. {_safe(x.title)}" for i, x in enumerate(items, 1)
+        ]
+        if items:
+            lines.append(
+                f"{len(items)} track(s) queued — /skip or /next advances."
+            )
+        await message.reply_text(
+            "Queue:\n" + "\n".join(lines), parse_mode=None
+        )
+
+    @bot.on_message(filters.command(["pause"], prefixes=["/", "!"]))
+    async def pause_handler(_, message: Message):
+        if not await _is_admin(message):
+            return await message.reply_text(
+                "Only group admins can pause playback."
+            )
+        await message.reply_text(
+            "Paused the stream."
+            if await player.pause(message.chat.id)
+            else "Nothing is playing to pause."
+        )
+
+    @bot.on_message(filters.command(["resume"], prefixes=["/", "!"]))
+    async def resume_handler(_, message: Message):
+        if not await _is_admin(message):
+            return await message.reply_text(
+                "Only group admins can resume playback."
+            )
+        await message.reply_text(
+            "Resumed the stream."
+            if await player.resume(message.chat.id)
+            else "Nothing is paused to resume."
+        )
+
+    @bot.on_message(filters.command(["skip", "next"], prefixes=["/", "!"]))
+    async def skip_handler(_, message: Message):
+        if not await _is_admin(message):
+            return await message.reply_text(
+                "Only group admins can skip tracks."
+            )
+        await message.reply_text(
+            "Skipped the current track."
+            if await player.skip(message.chat.id)
+            else "Nothing to skip -- the queue is empty."
+        )
+
+    @bot.on_message(filters.command(["stop"], prefixes=["/", "!"]))
+    async def stop_handler(_, message: Message):
+        if not await _is_admin(message):
+            return await message.reply_text(
+                "Only group admins can stop playback."
+            )
+        await player.stop(message.chat.id)
+        await message.reply_text(
+            "Left the voice chat and cleared the queue."
+        )
+
+    @bot.on_message(filters.command(["play"], prefixes=["/", "!"]))
+    async def play_handler(_, message: Message):
+        query = " ".join(message.command[1:])
+        if not query:
+            return await message.reply_text(
+                "Give me a song name or link, e.g. /play thriller"
+            )
+        status = await message.reply_text(
+            "Searching for " + _safe(query), parse_mode=None
+        )
         try:
-            user=message.from_user;item=await player.add(query,user.id if user else None);await player.play(message.chat.id,item)
-            await status.edit_text("▶ Now playing: "+_safe(item.title),reply_markup=controls(message.chat.id),parse_mode=None)
+            user = message.from_user
+            item = await player.add(
+                query, user.id if user else None
+            )
+            await player.play(message.chat.id, item)
+            await status.edit_text(
+                "▶ Now playing: " + _safe(item.title),
+                reply_markup=controls(message.chat.id),
+                parse_mode=None,
+            )
         except Exception as exc:
-            LOGGER.exception("Error handling /play");await status.edit_text(_safe(str(exc)),parse_mode=None)
+            LOGGER.exception("Error handling /play")
+            await status.edit_text(_safe(str(exc)), parse_mode=None)
