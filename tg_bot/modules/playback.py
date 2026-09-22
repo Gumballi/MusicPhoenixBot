@@ -29,6 +29,33 @@ def _safe(value: object) -> str:
     return html.escape(str(value or ""), quote=False)
 
 
+async def auto_delete(message, delay: int = 10) -> None:
+    """Delete a message after a short delay so transient replies don't pile up.
+
+    Best effort: bots without can_delete_messages (or messaging race) simply
+    fail silently.
+    """
+    try:
+        await asyncio.sleep(delay)
+        await message.delete()
+    except Exception:
+        pass
+
+
+async def _ephemeral_reply(message: Message, text: str, delay: int = 7, **kwargs) -> None:
+    """Reply with a confirmation that vanishes, along with the trigger message."""
+    try:
+        reply = await message.reply_text(text, **kwargs)
+    except Exception:
+        try:
+            await message.delete()
+        except Exception:
+            pass
+        return
+    asyncio.create_task(auto_delete(reply, delay))
+    asyncio.create_task(auto_delete(message, delay + 2))
+
+
 async def _can_control(player, chat, uid: Optional[int]) -> bool:
     """Requester-or-admin gate, shared by text commands and inline buttons.
 
@@ -230,7 +257,8 @@ def register(bot: Client, player) -> None:
         items = player.queue_list(message.chat.id)
         current = player.now_playing(message.chat.id)
         if not items and current is None:
-            return await message.reply_text(
+            return await _ephemeral_reply(
+                message,
                 "The queue is empty. Use /play &lt;song or link&gt; to add a track.",
                 parse_mode=enums.ParseMode.HTML,
             )
@@ -241,73 +269,76 @@ def register(bot: Client, player) -> None:
             lines.append(
                 f"{len(items)} track(s) queued — /skip or /next advances."
             )
-        await message.reply_text(
-            "Queue:\n" + "\n".join(lines), parse_mode=None
+        await _ephemeral_reply(
+            message, "Queue:\n" + "\n".join(lines) if lines else "Queue is empty."
         )
 
     @bot.on_message(filters.command(["pause"], prefixes=["/", "!"]))
     async def pause_handler(_, message: Message):
         uid = message.from_user.id if message.from_user else None
         if not await _can_control(player, message.chat, uid):
-            return await message.reply_text(
-                "Only the requester or a group admin can pause playback."
+            return await _ephemeral_reply(
+                message, "Only the requester or a group admin can pause playback."
             )
-        await message.reply_text(
+        await _ephemeral_reply(
+            message,
             "Paused the stream."
             if await player.pause(message.chat.id)
-            else "Nothing is playing to pause."
+            else "Nothing is playing to pause.",
         )
 
     @bot.on_message(filters.command(["resume"], prefixes=["/", "!"]))
     async def resume_handler(_, message: Message):
         uid = message.from_user.id if message.from_user else None
         if not await _can_control(player, message.chat, uid):
-            return await message.reply_text(
-                "Only the requester or a group admin can resume playback."
+            return await _ephemeral_reply(
+                message, "Only the requester or a group admin can resume playback."
             )
-        await message.reply_text(
+        await _ephemeral_reply(
+            message,
             "Resumed the stream."
             if await player.resume(message.chat.id)
-            else "Nothing is paused to resume."
+            else "Nothing is paused to resume.",
         )
 
     @bot.on_message(filters.command(["skip", "next"], prefixes=["/", "!"]))
     async def skip_handler(_, message: Message):
         uid = message.from_user.id if message.from_user else None
         if not await _can_control(player, message.chat, uid):
-            return await message.reply_text(
-                "Only the requester or a group admin can skip tracks."
+            return await _ephemeral_reply(
+                message, "Only the requester or a group admin can skip tracks."
             )
-        await message.reply_text(
+        await _ephemeral_reply(
+            message,
             "Skipped the current track."
             if await player.skip(message.chat.id)
-            else "Nothing to skip -- the queue is empty."
+            else "Nothing to skip -- the queue is empty.",
         )
 
     @bot.on_message(filters.command(["stop"], prefixes=["/", "!"]))
     async def stop_handler(_, message: Message):
         uid = message.from_user.id if message.from_user else None
         if not await _can_control(player, message.chat, uid):
-            return await message.reply_text(
-                "Only the requester or a group admin can stop playback."
+            return await _ephemeral_reply(
+                message, "Only the requester or a group admin can stop playback."
             )
         await player.stop(message.chat.id)
-        await message.reply_text(
-            "Left the voice chat and cleared the queue."
-        )
+        await player.delete_card(message.chat.id)
+        await _ephemeral_reply(message, "Left the voice chat and cleared the queue.")
 
     @bot.on_message(filters.command(["play"], prefixes=["/", "!"]))
     async def play_handler(_, message: Message):
         query = " ".join(message.command[1:])
         if not query:
-            return await message.reply_text(
-                "Give me a song name or link, e.g. /play thriller"
+            return await _ephemeral_reply(
+                message, "Give me a song name or link, e.g. /play thriller"
             )
         status = await message.reply_text(
             "Searching for " + _safe(query), parse_mode=None
         )
         user = message.from_user
         uid = user.id if user else None
+        asyncio.create_task(auto_delete(message, delay=9))
         try:
             stripped = query.strip()
             if stripped.startswith(("http://", "https://")):
@@ -318,6 +349,7 @@ def register(bot: Client, player) -> None:
                     reply_markup=controls(message.chat.id),
                     parse_mode=None,
                 )
+                await player.swap_card(message.chat.id, item, status)
                 return
             from tg_bot.resolver import search_tracks
             from tg_bot.modules.search import open_search
@@ -336,3 +368,4 @@ def register(bot: Client, player) -> None:
         except Exception as exc:
             LOGGER.exception("Error handling /play")
             await status.edit_text(_safe(str(exc)), parse_mode=None)
+            asyncio.create_task(auto_delete(status, delay=7))

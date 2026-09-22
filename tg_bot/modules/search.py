@@ -97,7 +97,7 @@ def open_search(chat_id: int, user_id: Optional[int], query: str, results: list)
 
 
 def register(bot: Client, player) -> None:
-    from tg_bot.modules.playback import controls, is_group_admin
+    from tg_bot.modules.playback import auto_delete, controls, is_group_admin
 
     @bot.on_callback_query(filters.regex(r"^s:([0-9a-z]+):(pick:\d+|prev|next|cancel)$"))
     async def search_callback(_, query):
@@ -139,6 +139,7 @@ def register(bot: Client, player) -> None:
                 await query.message.edit_text("Search cancelled.", parse_mode=None)
             except Exception:
                 pass
+            asyncio.create_task(auto_delete(query.message, delay=7))
             return
 
         if action == "prev":
@@ -219,6 +220,7 @@ def register(bot: Client, player) -> None:
                 )
             except Exception:
                 pass
+            asyncio.create_task(auto_delete(query.message, delay=7))
             return
 
         SESSIONS.pop(token, None)
@@ -230,3 +232,4 @@ def register(bot: Client, player) -> None:
             )
         except Exception:
             pass
+        await player.swap_card(sess.chat_id, item, query.message)

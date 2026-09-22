@@ -42,6 +42,8 @@ class ChatState:
     paused: bool = False
     advance: asyncio.Event = field(default_factory=asyncio.Event)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    card_id: Optional[int] = None
+    card_item: Optional[QueueItem] = None
 
 
 class VirtualAudioClient:
@@ -76,8 +78,9 @@ class VirtualAudioClient:
 
 
 class MusicPlayer:
-    def __init__(self, app) -> None:
+    def __init__(self, app, bot=None) -> None:
         self.app = app
+        self.bot = bot
         try:
             self.vc = VirtualAudioClient(app)
         except RuntimeError:
@@ -154,6 +157,8 @@ class MusicPlayer:
                 state.paused = False
                 state.advance.clear()
                 try:
+                    if state.card_id is not None and state.card_item is not item:
+                        await self.delete_card(chat_id)
                     size = (
                         os.path.getsize(item.url)
                         if item.url.startswith("/tmp/") and os.path.isfile(item.url)
@@ -186,6 +191,7 @@ class MusicPlayer:
             state.playing = False
             if not state.queue:
                 await self._stop_current(chat_id)
+                await self.delete_card(chat_id)
 
     @staticmethod
     def _discard(item: QueueItem) -> None:
@@ -277,3 +283,33 @@ class MusicPlayer:
     def queue_list(self, chat_id: int) -> list[QueueItem]:
         state = self.states.get(chat_id)
         return list(state.queue) if state else []
+
+    async def swap_card(self, chat_id: int, item: QueueItem, message) -> None:
+        """Point the active now-playing card at a message, deleting the old one.
+
+        Keeps at most one media card in the group: the previous now-playing
+        message is removed the moment a new card takes over.
+        """
+        state = self._state(chat_id)
+        old = state.card_id
+        new_id = message.id if getattr(message, "id", None) else None
+        state.card_id = new_id
+        state.card_item = item
+        if old and old != new_id and self.bot is not None:
+            try:
+                await self.bot.delete_messages(chat_id, old)
+            except Exception:
+                LOGGER.debug("could not delete previous card %s", old)
+
+    async def delete_card(self, chat_id: int) -> None:
+        """Delete and forget the active now-playing card (e.g. on /stop)."""
+        state = self.states.get(chat_id)
+        if state is not None and state.card_id is not None:
+            msg_id = state.card_id
+            state.card_id = None
+            state.card_item = None
+            if self.bot is not None:
+                try:
+                    await self.bot.delete_messages(chat_id, msg_id)
+                except Exception:
+                    LOGGER.debug("could not delete card %s", msg_id)
