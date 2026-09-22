@@ -163,8 +163,11 @@ def _ytdlp_candidates(extractor:str,q:str,count:int=10)->list:
    if score<=-500:continue
    title=x.get("title") or q;artist=x.get("uploader") or x.get("channel") or "";dur=x.get("duration") or 0
    if dur and dur<MIN_DURATION:continue
-   src=x.get("webpage_url") or x.get("original_url") or x.get("url")
-   if not src:continue
+   src=x.get("webpage_url") or x.get("original_url")
+   if not src:
+    raw=x.get("url")
+    if isinstance(raw,str) and raw.startswith(("http://","https://")):src=raw
+   if not src or src.startswith(("scsearch","ytsearch")):continue
    kind="sc" if extractor.startswith("sc") else "yt"
    out.append({"title":title,"artist":artist,"duration":dur,"webpage":src,"kind":kind,"src":src})
    if len(out)>=count:break
@@ -197,8 +200,9 @@ def resolve_selected(cand:dict)->dict:
  """
  kind=cand.get("kind");src=cand.get("src")
  if not src:raise ResolveError("candidate is missing a source")
+ if src.startswith(("scsearch","ytsearch")):raise ResolveError("invalid track source: %s"%src)
  if kind=="jio":
-  return {"title":cand.get("title") or src,"url":src,"webpage":cand.get("webpage") or src}
+  return {"title":cand.get("title") or src,"url":src,"webpage":cand.get("webpage") or src,"duration":cand.get("duration")}
  opts=dict(_YDL_COMMON)
  opts.pop("ignoreerrors",None)
  if kind=="yt":opts.update(_YOUTUBE_SPOOF)
@@ -213,4 +217,4 @@ def resolve_selected(cand:dict)->dict:
    raise ResolveError("no media file materialized for %s"%src)
   actual=(info.get("duration") or 0) if info else 0
   if actual and actual<MIN_DURATION:os.remove(path);raise ResolveError("only %ss preview"%actual)
-  return {"title":info.get("title",cand.get("title")) if info else cand.get("title"),"url":path,"webpage":info.get("webpage_url",src) if info else src}
+  return {"title":info.get("title",cand.get("title")) if info else cand.get("title"),"url":path,"webpage":info.get("webpage_url",src) if info else src,"duration":actual or cand.get("duration")}

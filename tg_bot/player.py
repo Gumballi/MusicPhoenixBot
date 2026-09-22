@@ -29,6 +29,7 @@ class QueueItem:
     requester: Optional[int]
     webpage: Optional[str]
     requested_by: Optional[str] = None
+    duration: Optional[int] = None
 
 
 @dataclass
@@ -121,6 +122,7 @@ class MusicPlayer:
             url=info["url"],
             requester=requester,
             webpage=info.get("webpage"),
+            duration=info.get("duration"),
         )
 
     async def add_resolved(self, info: dict, requester: Optional[int] = None) -> QueueItem:
@@ -130,6 +132,7 @@ class MusicPlayer:
             url=info["url"],
             requester=requester,
             webpage=info.get("webpage"),
+            duration=info.get("duration"),
         )
 
     async def play(self, chat_id: int, item: QueueItem) -> None:
@@ -151,6 +154,18 @@ class MusicPlayer:
                 state.paused = False
                 state.advance.clear()
                 try:
+                    size = (
+                        os.path.getsize(item.url)
+                        if item.url.startswith("/tmp/") and os.path.isfile(item.url)
+                        else None
+                    )
+                    LOGGER.info(
+                        "chat %s: handing %r to VC (expected %ss, file=%s bytes)",
+                        chat_id,
+                        item.title,
+                        item.duration if item.duration is not None else "?",
+                        size if size is not None else "remote-url",
+                    )
                     await self.vc.play(chat_id, item.url)
                     LOGGER.info("chat %s now streaming %r", chat_id, item.title)
                 except Exception:
