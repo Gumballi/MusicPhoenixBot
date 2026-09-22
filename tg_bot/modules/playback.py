@@ -43,17 +43,12 @@ async def auto_delete(message, delay: int = 10) -> None:
 
 
 async def _ephemeral_reply(message: Message, text: str, delay: int = 7, **kwargs) -> None:
-    """Reply with a confirmation that vanishes, along with the trigger message."""
+    """Reply with a confirmation that vanishes; never touches the user's message."""
     try:
         reply = await message.reply_text(text, **kwargs)
     except Exception:
-        try:
-            await message.delete()
-        except Exception:
-            pass
         return
     asyncio.create_task(auto_delete(reply, delay))
-    asyncio.create_task(auto_delete(message, delay + 2))
 
 
 async def _can_control(player, chat, uid: Optional[int]) -> bool:
@@ -338,7 +333,6 @@ def register(bot: Client, player) -> None:
         )
         user = message.from_user
         uid = user.id if user else None
-        asyncio.create_task(auto_delete(message, delay=9))
         try:
             stripped = query.strip()
             if stripped.startswith(("http://", "https://")):
