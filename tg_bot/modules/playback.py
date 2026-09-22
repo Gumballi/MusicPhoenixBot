@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+from typing import Optional
 
 from pyrogram import Client, enums, filters
 from pyrogram.types import (
@@ -19,6 +20,7 @@ from tg_bot.config import (
     BOT_PIC,
     BOT_WHO,
     LOGGER,
+    MAX_QUEUE,
 )
 
 
@@ -26,15 +28,26 @@ def _safe(value: object) -> str:
     return html.escape(str(value or ""), quote=False)
 
 
-async def _is_admin(message: Message) -> bool:
-    user = message.from_user
-    if user is None or user.id in ADMIN_IDS:
+async def _can_control(player, chat, uid: Optional[int]) -> bool:
+    """Requester-or-admin gate, shared by text commands and inline buttons.
+
+    Mirrors the inline-callback authorization so /pause and the ⏸️ button agree:
+    a track's requester always controls it; otherwise group admins still do.
+    """
+    if uid is None:
+        return False
+    if uid in ADMIN_IDS:
         return True
+    current = player.now_playing(chat.id) if chat is not None else None
+    if current is not None and current.requester == uid:
+        return True
+    if chat is None:
+        return False
     try:
-        member = await message.chat.get_member(user.id)
+        member = await chat.get_member(uid)
+        return member.status.value in ("administrator", "creator")
     except Exception:
         return False
-    return member.status.value in ("administrator", "creator")
 
 
 def controls(chat_id: int, paused: bool = False) -> InlineKeyboardMarkup:
@@ -83,11 +96,12 @@ give me a song or a link, and the sidecar account joins the call and plays it.
  └ /resume — resume the current track.
  └ /skip or /next — jump to the next track (they are the same command).
  └ /stop — leave the voice chat and clear the whole queue.
+ └ /settings — show the current toggles (queue limit, requester controls, inline buttons).
 
 <b>Who can control playback?</b>
- • Group admins and the person who requested the current track can pause, resume, skip or stop.
+ • The person who requested the current track, and group admins, can pause, resume, skip or stop.
  • Anyone can /play and /queue.
- • The <b>▶ Now playing</b> banner carries inline ⏸️ ⏭️ ⏹️ buttons, so admins don't even need to type a command.
+ • The <b>▶ Now playing</b> banner carries inline ⏸️ ⏭️ ⏹️ buttons, so no one needs to type a command.
 
 {BOT_WHO}
 """.format(
@@ -171,10 +185,40 @@ def register(bot: Client, player) -> None:
 
     @bot.on_message(filters.command(["help"], prefixes=["/", "!"]))
     async def help_handler(_, message: Message):
-        await message.reply_text(
-            HELP_TEXT.format(bot_name=_safe(_bot_display(bot))),
-            parse_mode=enums.ParseMode.HTML,
+        text = HELP_TEXT.format(bot_name=_safe(_bot_display(bot)))
+        user = message.from_user
+        if message.chat.type != enums.ChatType.PRIVATE and user is not None:
+            try:
+                await bot.send_message(
+                    user.id, text, parse_mode=enums.ParseMode.HTML
+                )
+            except Exception:
+                LOGGER.warning("help PM blocked for user %s", user.id)
+                return await message.reply_text(
+                    f"{BOT_PIC} I tried to PM you /help but you've blocked me. "
+                    "Start me in private with /start, then use /help there.",
+                    parse_mode=None,
+                )
+            return await message.reply_text(
+                f"{BOT_PIC} I sent the full /help to your private chat.",
+                parse_mode=None,
+            )
+        await message.reply_text(text, parse_mode=enums.ParseMode.HTML)
+
+    @bot.on_message(filters.command(["settings"], prefixes=["/", "!"]))
+    async def settings_handler(_, message: Message):
+        inline = "on (▶ Now playing banner has ⏸️ ⏭️ ⏹️)"
+        text = (
+            f"{BOT_PIC} <b>Current settings</b> (no database — all live from env):\n\n"
+            f"• Queue limit: <b>{MAX_QUEUE}</b> tracks\n"
+            f"• Requester controls: <b>enabled</b> — the requester or a group admin can "
+            "pause, resume, skip or stop\n"
+            f"• Inline control buttons: <b>{inline}</b>\n"
+            f"• Resolve order: JioSaavn → SoundCloud → YouTube (min 45s)\n"
+            f"• Spare voice account: @{_safe(ASSISTANT_USERNAME)}\n\n"
+            "Toggling these is done via env vars on the host, not in chat."
         )
+        await message.reply_text(text, parse_mode=enums.ParseMode.HTML)
 
     @bot.on_message(filters.command(["queue"], prefixes=["/", "!"]))
     async def queue_handler(_, message: Message):
@@ -198,9 +242,10 @@ def register(bot: Client, player) -> None:
 
     @bot.on_message(filters.command(["pause"], prefixes=["/", "!"]))
     async def pause_handler(_, message: Message):
-        if not await _is_admin(message):
+        uid = message.from_user.id if message.from_user else None
+        if not await _can_control(player, message.chat, uid):
             return await message.reply_text(
-                "Only group admins can pause playback."
+                "Only the requester or a group admin can pause playback."
             )
         await message.reply_text(
             "Paused the stream."
@@ -210,9 +255,10 @@ def register(bot: Client, player) -> None:
 
     @bot.on_message(filters.command(["resume"], prefixes=["/", "!"]))
     async def resume_handler(_, message: Message):
-        if not await _is_admin(message):
+        uid = message.from_user.id if message.from_user else None
+        if not await _can_control(player, message.chat, uid):
             return await message.reply_text(
-                "Only group admins can resume playback."
+                "Only the requester or a group admin can resume playback."
             )
         await message.reply_text(
             "Resumed the stream."
@@ -222,9 +268,10 @@ def register(bot: Client, player) -> None:
 
     @bot.on_message(filters.command(["skip", "next"], prefixes=["/", "!"]))
     async def skip_handler(_, message: Message):
-        if not await _is_admin(message):
+        uid = message.from_user.id if message.from_user else None
+        if not await _can_control(player, message.chat, uid):
             return await message.reply_text(
-                "Only group admins can skip tracks."
+                "Only the requester or a group admin can skip tracks."
             )
         await message.reply_text(
             "Skipped the current track."
@@ -234,9 +281,10 @@ def register(bot: Client, player) -> None:
 
     @bot.on_message(filters.command(["stop"], prefixes=["/", "!"]))
     async def stop_handler(_, message: Message):
-        if not await _is_admin(message):
+        uid = message.from_user.id if message.from_user else None
+        if not await _can_control(player, message.chat, uid):
             return await message.reply_text(
-                "Only group admins can stop playback."
+                "Only the requester or a group admin can stop playback."
             )
         await player.stop(message.chat.id)
         await message.reply_text(

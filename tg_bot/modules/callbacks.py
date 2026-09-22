@@ -3,8 +3,8 @@
 from pyrogram import Client, filters
 from pyrogram.errors import QueryIdInvalid
 
-from tg_bot.config import ADMIN_IDS, LOGGER
-from tg_bot.modules.playback import controls
+from tg_bot.config import LOGGER
+from tg_bot.modules.playback import _can_control, controls
 
 
 def register(bot: Client, player) -> None:
@@ -16,14 +16,8 @@ def register(bot: Client, player) -> None:
             return
         chat_id = int(raw_chat)
         uid = query.from_user.id if query.from_user else None
-        current = player.now_playing(chat_id)
-        allowed = uid in ADMIN_IDS or bool(current and current.requester == uid)
-        if not allowed and query.message is not None and uid is not None:
-            try:
-                member = await query.message.chat.get_member(uid)
-                allowed = member.status.value in ("administrator", "creator")
-            except Exception:
-                allowed = False
+        chat = query.message.chat if query.message is not None else None
+        allowed = await _can_control(player, chat, uid)
         try:
             if not allowed:
                 await query.answer(
