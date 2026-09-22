@@ -188,19 +188,29 @@ def search_tracks(q:str,count:int=10)->list:
  raise ResolveError("No search results for %r -- %s"%(q," | ".join(errors)))
 
 def resolve_selected(cand:dict)->dict:
- """Fetch exactly one chosen candidate (download happens now, never up front)."""
+ """Fetch exactly one chosen candidate (download happens now, never up front).
+
+ ignoreerrors is turned OFF here on purpose: with it left on, yt-dlp silently
+ swallows HTTP 403 / "Sign in to confirm you're not a bot" from YouTube's
+ datacenter blocks and returns an empty dict, which the old code misread as a
+ generic "download did not materialize". Stripping it surfaces the real error.
+ """
  kind=cand.get("kind");src=cand.get("src")
  if not src:raise ResolveError("candidate is missing a source")
  if kind=="jio":
   return {"title":cand.get("title") or src,"url":src,"webpage":cand.get("webpage") or src}
  opts=dict(_YDL_COMMON)
+ opts.pop("ignoreerrors",None)
  if kind=="yt":opts.update(_YOUTUBE_SPOOF)
  with yt_dlp.YoutubeDL(opts) as y:
   try:info=y.extract_info(src,download=True)
-  except Exception as e:raise ResolveError("failed to fetch %s: %s"%(src,e)) from e
+  except Exception as e:raise ResolveError("download failed for %s: %s"%(src,e)) from e
   if info and info.get("entries"):info=next((z for z in info["entries"] if z),None)
   path=_downloaded_path(info or {})
-  if not path:raise ResolveError("download did not materialize")
+  if not path:
+   if not info:
+    raise ResolveError("source returned nothing (blocked by the host?): %s"%src)
+   raise ResolveError("no media file materialized for %s"%src)
   actual=(info.get("duration") or 0) if info else 0
   if actual and actual<MIN_DURATION:os.remove(path);raise ResolveError("only %ss preview"%actual)
   return {"title":info.get("title",cand.get("title")) if info else cand.get("title"),"url":path,"webpage":info.get("webpage_url",src) if info else src}

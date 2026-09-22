@@ -25,7 +25,7 @@ MAX_SESSIONS = 200
 
 
 class SearchSession:
-    __slots__ = ("chat_id", "user_id", "query", "results", "page", "expires")
+    __slots__ = ("chat_id", "user_id", "query", "results", "page", "expires", "picking")
 
     def __init__(self, chat_id: int, user_id: Optional[int], query: str, results: list):
         self.chat_id = chat_id
@@ -34,6 +34,7 @@ class SearchSession:
         self.results = results
         self.page = 0
         self.expires = time.time() + TTL
+        self.picking = False
 
 
 SESSIONS: dict[str, SearchSession] = {}
@@ -64,8 +65,9 @@ def _render(sess: SearchSession, token: str) -> tuple[str, InlineKeyboardMarkup]
     ]
     for i, item in enumerate(page_items, start + 1):
         artist = f" — {_safe(item.get('artist'))}" if item.get("artist") else ""
+        badge = {"jio": "🟢", "sc": "🔵", "yt": "🔴"}.get(str(item.get("kind")), "⚪")
         lines.append(
-            f"<b>{i}.</b> {_safe(item.get('title'))}{artist} ({_dur(item.get('duration'))})"
+            f"{badge} <b>{i}.</b> {_safe(item.get('title'))}{artist} ({_dur(item.get('duration'))})"
         )
     row = [
         InlineKeyboardButton(str(n), callback_data=f"s:{token}:pick:{i}")
@@ -167,8 +169,16 @@ def register(bot: Client, player) -> None:
         idx = sess.page * PAGE_SIZE + rel
         if not (0 <= idx < len(sess.results)):
             return
+        if sess.picking:
+            try:
+                await query.answer(
+                    "A selection is already downloading — hang tight.",
+                    show_alert=True,
+                )
+            except QueryIdInvalid:
+                pass
+            return
         cand = sess.results[idx]
-        SESSIONS.pop(token, None)
 
         title = cand.get("title") or cand.get("src", "")
         try:
@@ -176,22 +186,32 @@ def register(bot: Client, player) -> None:
         except Exception:
             pass
 
+        sess.picking = True
         try:
             info = await asyncio.to_thread(resolve_selected, cand)
             item = await player.add_resolved(info, uid)
             await player.play(sess.chat_id, item)
-            await query.message.edit_text(
-                "▶ Now playing: " + _safe(info.get("title") or title),
-                reply_markup=controls(sess.chat_id),
-                parse_mode=None,
-            )
         except ResolveError as exc:
+            sess.picking = False
             LOGGER.warning("search pick failed: %s", exc)
+            hint = ""
+            if cand.get("kind") == "yt":
+                hint = (
+                    "\n\n(badges: 🟢 JioSaavn · 🔵 SoundCloud · 🔴 YouTube — "
+                    "YouTube often refuses datacenter IPs, so try a green or blue one)"
+                )
             try:
-                await query.message.edit_text(_safe(str(exc)), parse_mode=None)
+                text, markup = _render(sess, token)
+                await query.message.edit_text(
+                    "❌ That pick failed: " + _safe(str(exc)) + hint + "\n\n" + text,
+                    reply_markup=markup,
+                    parse_mode=enums.ParseMode.HTML,
+                )
             except Exception:
                 pass
+            return
         except Exception:
+            sess.picking = False
             LOGGER.exception("search pick crashed")
             try:
                 await query.message.edit_text(
@@ -199,3 +219,14 @@ def register(bot: Client, player) -> None:
                 )
             except Exception:
                 pass
+            return
+
+        SESSIONS.pop(token, None)
+        try:
+            await query.message.edit_text(
+                "▶ Now playing: " + _safe(info.get("title") or title),
+                reply_markup=controls(sess.chat_id),
+                parse_mode=None,
+            )
+        except Exception:
+            pass
