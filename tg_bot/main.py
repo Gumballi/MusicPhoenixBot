@@ -17,7 +17,7 @@ async def _boot() -> None:
     assistant = Client("music_phoenix_assistant", api_id=API_ID, api_hash=API_HASH, session_string=STRING_SESSION, in_memory=True, no_updates=False)
     player = MusicPlayer(assistant)
     await bot.start(); await assistant.start(); await player.start()
-    for name in ("playback", "callbacks"):
+    for name in ("playback", "callbacks", "search"):
         import_module(f"tg_bot.modules.{name}").register(bot, player)
     LOGGER.info("Music Phoenix is online and ready for /play in groups!")
     await idle()

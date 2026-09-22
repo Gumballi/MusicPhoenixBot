@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import html
 from typing import Optional
 
@@ -41,7 +42,11 @@ async def _can_control(player, chat, uid: Optional[int]) -> bool:
     current = player.now_playing(chat.id) if chat is not None else None
     if current is not None and current.requester == uid:
         return True
-    if chat is None:
+    return await is_group_admin(chat, uid)
+
+
+async def is_group_admin(chat, uid: Optional[int]) -> bool:
+    if uid is None or chat is None:
         return False
     try:
         member = await chat.get_member(uid)
@@ -89,8 +94,8 @@ HELP_TEXT = """
 give me a song or a link, and the sidecar account joins the call and plays it.
 
 <b>Commands</b> (all also work with ! instead of /)
- └ /play &lt;song name or link&gt; — resolve &amp; stream now. I look up JioSaavn first, then SoundCloud, then YouTube, and
-   pick the first playable result over {min_duration}s long.
+ └ /play &lt;song name or link&gt; — a link streams right away; a text search shows 5 choices to pick from
+   (metadata only, nothing downloaded until you choose). I look up JioSaavn, then SoundCloud, then YouTube.
  └ /queue — show what's next in line.
  └ /pause — pause the current track.
  └ /resume — resume the current track.
@@ -301,16 +306,32 @@ def register(bot: Client, player) -> None:
         status = await message.reply_text(
             "Searching for " + _safe(query), parse_mode=None
         )
+        user = message.from_user
+        uid = user.id if user else None
         try:
-            user = message.from_user
-            item = await player.add(
-                query, user.id if user else None
+            stripped = query.strip()
+            if stripped.startswith(("http://", "https://")):
+                item = await player.add(query, uid)
+                await player.play(message.chat.id, item)
+                await status.edit_text(
+                    "▶ Now playing: " + _safe(item.title),
+                    reply_markup=controls(message.chat.id),
+                    parse_mode=None,
+                )
+                return
+            from tg_bot.resolver import search_tracks
+            from tg_bot.modules.search import open_search
+
+            results = await asyncio.to_thread(search_tracks, query)
+            if not results:
+                raise Exception("No results for that search.")
+            _, text, markup = open_search(
+                message.chat.id, uid, query, results
             )
-            await player.play(message.chat.id, item)
             await status.edit_text(
-                "▶ Now playing: " + _safe(item.title),
-                reply_markup=controls(message.chat.id),
-                parse_mode=None,
+                text,
+                reply_markup=markup,
+                parse_mode=enums.ParseMode.HTML,
             )
         except Exception as exc:
             LOGGER.exception("Error handling /play")

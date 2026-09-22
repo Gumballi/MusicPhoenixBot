@@ -129,3 +129,78 @@ def resolve_track(q:str)->dict:
   try:return _search_ytdlp("ytsearch5",v,5)
   except ResolveError as e:errors.append(str(e))
  raise ResolveError("No free stream resolved for %r -- %s"%(q," | ".join(errors)))
+
+def _search_jiosaavn_list(q:str,count:int=10):
+ u="https://www.jiosaavn.com/api.php?"+urllib.parse.urlencode({"__call":"search.getResults","_format":"json","_marker":0,"query":_clean(q),"n":count})
+ try:
+  with urllib.request.urlopen(urllib.request.Request(u,headers={"User-Agent":"Mozilla/5.0"}),timeout=12) as r:p=json.loads(r.read().decode("utf-8","replace"))
+ except Exception as e:LOGGER.warning("JioSaavn search failed: %s",e);return []
+ es=p if isinstance(p,list) else (p.get("results") or []) if isinstance(p,dict) else []
+ out=[]
+ for x in es:
+  if not isinstance(x,dict):continue
+  m=x.get("media_url") or x.get("download_url") or ""
+  if not isinstance(m,str) or not m.startswith("https://"):continue
+  try:d=int(x.get("duration") or 0)
+  except (TypeError,ValueError):d=0
+  if d and d<MIN_DURATION:continue
+  out.append({"title":x.get("title") or q,"artist":x.get("singers") or "","duration":d,"webpage":x.get("perma_url") or "","kind":"jio","src":m})
+  if len(out)>=count:break
+ return out
+
+def _ytdlp_candidates(extractor:str,q:str,count:int=10)->list:
+ """Metadata-only search results; nothing is downloaded here."""
+ opts=dict(_YDL_COMMON)
+ if extractor.startswith("ytsearch"):opts.update(_YOUTUBE_SPOOF)
+ with yt_dlp.YoutubeDL(opts) as y:
+  try:listing=y.extract_info("{}:{}".format(extractor,q),download=False)
+  except Exception as e:raise ResolveError("yt-dlp %s search failed for %r: %s"%(extractor,q,e)) from e
+  es=[x for x in (listing.get("entries") or []) if x][:count] if listing else []
+  if not es and listing:es=[listing]
+  scored=sorted(((_score(x,q),i,x) for i,x in enumerate(es)),key=lambda z:z[0],reverse=True)
+  out=[]
+  for rank,(score,_,x) in enumerate(scored,1):
+   if score<=-500:continue
+   title=x.get("title") or q;artist=x.get("uploader") or x.get("channel") or "";dur=x.get("duration") or 0
+   if dur and dur<MIN_DURATION:continue
+   src=x.get("webpage_url") or x.get("original_url") or x.get("url")
+   if not src:continue
+   kind="sc" if extractor.startswith("sc") else "yt"
+   out.append({"title":title,"artist":artist,"duration":dur,"webpage":src,"kind":kind,"src":src})
+   if len(out)>=count:break
+  if not out:raise ResolveError("no %s candidates for %r"%(extractor,q))
+  return out
+
+def search_tracks(q:str,count:int=10)->list:
+ """Metadata-only search across JioSaavn -> SoundCloud -> YouTube. No audio downloaded."""
+ q=(q or "").strip()
+ if not q:raise ResolveError("Empty music query")
+ for v in _query_variants(q):
+  hits=_search_jiosaavn_list(v,count)
+  if hits:return hits
+ errors=[]
+ for v in _query_variants(q):
+  try:return _ytdlp_candidates("scsearch5",v,count)
+  except ResolveError as e:errors.append(str(e));LOGGER.warning("SoundCloud list failed for %r: %s",v,e)
+ for v in _query_variants(q):
+  try:return _ytdlp_candidates("ytsearch5",v,count)
+  except ResolveError as e:errors.append(str(e));LOGGER.warning("YouTube list failed for %r: %s",v,e)
+ raise ResolveError("No search results for %r -- %s"%(q," | ".join(errors)))
+
+def resolve_selected(cand:dict)->dict:
+ """Fetch exactly one chosen candidate (download happens now, never up front)."""
+ kind=cand.get("kind");src=cand.get("src")
+ if not src:raise ResolveError("candidate is missing a source")
+ if kind=="jio":
+  return {"title":cand.get("title") or src,"url":src,"webpage":cand.get("webpage") or src}
+ opts=dict(_YDL_COMMON)
+ if kind=="yt":opts.update(_YOUTUBE_SPOOF)
+ with yt_dlp.YoutubeDL(opts) as y:
+  try:info=y.extract_info(src,download=True)
+  except Exception as e:raise ResolveError("failed to fetch %s: %s"%(src,e)) from e
+  if info and info.get("entries"):info=next((z for z in info["entries"] if z),None)
+  path=_downloaded_path(info or {})
+  if not path:raise ResolveError("download did not materialize")
+  actual=(info.get("duration") or 0) if info else 0
+  if actual and actual<MIN_DURATION:os.remove(path);raise ResolveError("only %ss preview"%actual)
+  return {"title":info.get("title",cand.get("title")) if info else cand.get("title"),"url":path,"webpage":info.get("webpage_url",src) if info else src}

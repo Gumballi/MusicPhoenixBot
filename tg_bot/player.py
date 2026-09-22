@@ -123,6 +123,15 @@ class MusicPlayer:
             webpage=info.get("webpage"),
         )
 
+    async def add_resolved(self, info: dict, requester: Optional[int] = None) -> QueueItem:
+        """Enqueue an already-resolved track dict (from the search picker)."""
+        return QueueItem(
+            title=info["title"],
+            url=info["url"],
+            requester=requester,
+            webpage=info.get("webpage"),
+        )
+
     async def play(self, chat_id: int, item: QueueItem) -> None:
         if self.vc is None:
             raise RuntimeError("Voice-chat worker (PyTgCalls) is offline")
