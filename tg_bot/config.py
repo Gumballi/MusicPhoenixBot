@@ -43,6 +43,12 @@ BOT_WHO = os.environ.get(
 ).strip()
 BOT_PIC = os.environ.get("BOT_PIC", "🪶").strip()
 
+# The spare user account that joins the voice channel and streams audio.
+# Env-overridable; the group-join setup message tells admins to add this user.
+ASSISTANT_USERNAME = (
+    os.environ.get("ASSISTANT_USERNAME", "PhoenixStreamer").strip() or "PhoenixStreamer"
+)
+
 MAX_QUEUE = _opt_int("MAX_QUEUE", 50)
 
 # main.py:12 imports ADMIN_IDS at boot; without a binding Render dies with

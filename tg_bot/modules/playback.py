@@ -5,9 +5,21 @@ from __future__ import annotations
 import html
 
 from pyrogram import Client, enums, filters
-from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
+from pyrogram.types import (
+    ChatMemberUpdated,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
-from tg_bot.config import ADMIN_IDS, BOT_NAME, BOT_PIC, BOT_WHO, LOGGER
+from tg_bot.config import (
+    ADMIN_IDS,
+    ASSISTANT_USERNAME,
+    BOT_NAME,
+    BOT_PIC,
+    BOT_WHO,
+    LOGGER,
+)
 
 
 def _safe(value: object) -> str:
@@ -96,7 +108,7 @@ def register(bot: Client, player) -> None:
         )
         bot_name = _bot_display(bot)
         username = _bot_username(bot)
-        if message.chat.type == "private":
+        if message.chat.type == enums.ChatType.PRIVATE:
             text = (
                 f"{BOT_PIC} Hi {_safe(name)}, my name is {_safe(bot_name)}!\n\n"
                 "I stream music straight into any group's voice chat — add me to a group and type /play, "
@@ -120,6 +132,42 @@ def register(bot: Client, player) -> None:
             f"{BOT_PIC} I'm {_safe(bot_name)} — use /play &lt;song or link&gt; to start streaming music here.",
             parse_mode=enums.ParseMode.HTML,
         )
+
+    @bot.on_chat_member_updated()
+    async def member_update_handler(_, update: ChatMemberUpdated):
+        chat_type = update.chat.type
+        if chat_type not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
+            return
+        new = update.new_chat_member
+        if new is None or new.status not in (
+            enums.ChatMemberStatus.MEMBER,
+            enums.ChatMemberStatus.ADMINISTRATOR,
+        ):
+            return
+        old = update.old_chat_member
+        if old is not None and old.status not in (
+            enums.ChatMemberStatus.LEFT,
+            enums.ChatMemberStatus.BANNED,
+        ):
+            return
+        try:
+            if new.user and new.user.id != bot.me.id:
+                return
+        except Exception:
+            return
+        bot_name = _bot_display(bot)
+        text = (
+            f"{BOT_PIC} <b>{_safe(bot_name)}</b> needs two things to stream music here:\n\n"
+            "1️⃣ <b>Permission to send messages</b> — I take the least-privilege route: answer my inline "
+            "button when it shows up, or just make me an admin.\n"
+            f"2️⃣ <b>The spare voice account must join this group.</b> Add @{_safe(ASSISTANT_USERNAME)} here so "
+            "it can join the voice channel — I only control the chat, the spare account streams audio.\n\n"
+            "Once that's set, an admin types /play &lt;song or link&gt; and we're live."
+        )
+        try:
+            await bot.send_message(update.chat.id, text, parse_mode=enums.ParseMode.HTML)
+        except Exception as exc:
+            LOGGER.warning("member-update setup message failed: %s", exc)
 
     @bot.on_message(filters.command(["help"], prefixes=["/", "!"]))
     async def help_handler(_, message: Message):
