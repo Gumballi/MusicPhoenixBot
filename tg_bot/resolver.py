@@ -102,7 +102,7 @@ def _search_ytdlp(extractor:str,q:str,count:int=5)->dict:
     if not path:raise ResolveError("download did not materialize")
     actual=(info.get("duration") or dur) if info else dur
     if actual and actual<MIN_DURATION:os.remove(path);raise ResolveError("only %ss preview"%actual)
-    return {"title":info.get("title",title) if info else title,"url":path,"webpage":info.get("webpage_url",src) if info else src}
+    return {"title":info.get("title",title) if info else title,"url":path,"webpage":info.get("webpage_url",src) if info else src,"duration":actual or dur}
    except Exception as e:errors.append("%s: %s"%(title,e));LOGGER.warning("%s candidate=%d failed; trying next: %s",extractor,rank,e)
   raise ResolveError("no playable %s candidate for %r (%s)"%(extractor,q,"; ".join(errors)))
 
@@ -190,6 +190,17 @@ def search_tracks(q:str,count:int=10)->list:
   except ResolveError as e:errors.append(str(e));LOGGER.warning("YouTube list failed for %r: %s",v,e)
  raise ResolveError("No search results for %r -- %s"%(q," | ".join(errors)))
 
+def _youtube_fallback_query(cand: dict) -> str:
+ title=str(cand.get("title") or "").strip();artist=str(cand.get("artist") or "").strip()
+ return " ".join(x for x in (title,artist) if x).strip()
+
+def _resolve_youtube_fallback(cand:dict)->dict:
+ """SoundCloud DRM pivot: reuse the proven YouTube pipeline with mobile spoofing."""
+ query=_youtube_fallback_query(cand)
+ if not query:raise ResolveError("SoundCloud DRM fallback missing title/artist")
+ LOGGER.info("SoundCloud DRM fallback for %r -> ytsearch5 %r",cand.get("src"),query)
+ return _search_ytdlp("ytsearch5",query,5)
+
 def resolve_selected(cand:dict)->dict:
  """Fetch exactly one chosen candidate (download happens now, never up front).
 
@@ -208,7 +219,12 @@ def resolve_selected(cand:dict)->dict:
  if kind=="yt":opts.update(_YOUTUBE_SPOOF)
  with yt_dlp.YoutubeDL(opts) as y:
   try:info=y.extract_info(src,download=True)
-  except Exception as e:raise ResolveError("download failed for %s: %s"%(src,e)) from e
+  except Exception as e:
+   err=str(e)
+   if kind=="sc" and ("DRM protected" in err or "drm" in err.lower()):
+    LOGGER.warning("SoundCloud DRM blocked %r; falling back to YouTube",src)
+    return _resolve_youtube_fallback(cand)
+   raise ResolveError("download failed for %s: %s"%(src,e)) from e
   if info and info.get("entries"):info=next((z for z in info["entries"] if z),None)
   path=_downloaded_path(info or {})
   if not path:
