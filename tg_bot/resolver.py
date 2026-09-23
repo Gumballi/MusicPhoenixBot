@@ -5,7 +5,7 @@ from typing import Optional
 import yt_dlp
 LOGGER=logging.getLogger(__name__); MIN_DURATION=45
 _YDL_COMMON={"format":"bestaudio/best","noplaylist":True,"quiet":True,"noprogress":True,"no_warnings":True,"nocheckcertificate":True,"socket_timeout":15,"retries":2,"ignoreerrors":True,"outtmpl":"/tmp/mp_%(id)s.%(ext)s"}
-_YOUTUBE_SPOOF={"extractor_args":{"youtube":{"player_client":["android_vr","tv_embedded","android_creator","mweb","android","ios"]}}}
+_YOUTUBE_SPOOF={"extractor_args":{"youtube":{"player_client":["ios","android"]}}}
 GATED_HOSTS=("youtube.com","youtu.be","googlevideo.com","ggpht.com","ytimg.com")
 BAD_TERMS=("unreleased","demo","snippet","leak","acapella","instrumental","karaoke","cover","remix","live","tribute","pitch","slowed","sped up","speed up","reverb","8d audio","mashup","bootleg","edit","type beat","prod","prod by","produced by","freestyle","flip","sample")
 class ResolveError(Exception): pass
@@ -192,7 +192,8 @@ def search_tracks(q:str,count:int=10)->list:
 
 def _youtube_fallback_query(cand: dict) -> str:
  title=str(cand.get("title") or "").strip();artist=str(cand.get("artist") or "").strip()
- return " ".join(x for x in (title,artist) if x).strip()
+ base=" ".join(x for x in (title,artist) if x).strip()
+ return f"{base} audio" if base else ""
 
 def _resolve_youtube_fallback(cand:dict)->dict:
  """SoundCloud DRM pivot: reuse the proven YouTube pipeline with mobile spoofing."""
